@@ -30,6 +30,7 @@
 # - remove all die()
 # - extend the API
 # - more test scripts
+# - add the version of the compiler in compiled mibs.
 
 package SNMP::MIB::Compiler;
 
@@ -42,8 +43,8 @@ use FileHandle;
 
 @ISA     = qw(Exporter);
 @EXPORT  = ();
-$VERSION = 0.01;
-$DEBUG   = 1;
+$VERSION = 0.02;
+$DEBUG   = 1; # no longer used
 
 ######################################################################
 # ASN1 items. (See Rec. X.208 §8)
@@ -149,6 +150,60 @@ my $VALUE            = &add_token ($TOKEN, 'VALUE');
 my $MACROTYPE        = &add_token ($TOKEN, 'MACROTYPE');
 my $MACROVALUE       = &add_token ($TOKEN, 'MACROVALUE');
 
+my $keywords = {
+                'BOOLEAN'     => $BOOLEAN,
+                'INTEGER'     => $INTEGER,
+                'BIT'         => $BIT,
+                'STRING'      => $STRING,
+                'OCTET'       => $OCTET,
+                'NULL'        => $NULL,
+                'SEQUENCE'    => $SEQUENCE,
+                'OF'          => $OF,
+                'SET'         => $SET,
+                'IMPLICIT'    => $IMPLICIT,
+                'CHOICE'      => $CHOICE,
+                'ANY'         => $ANY,
+                'EXTERNAL'    => $EXTERNAL,
+                'OBJECT'      => $OBJECT,
+                'IDENTIFIER'  => $IDENTIFIER,
+                'OPTIONAL'    => $OPTIONAL,
+                'DEFAULT'     => $DEFAULT,
+                'COMPONENTS'  => $COMPONENTS,
+                'UNIVERSAL'   => $UNIVERSAL,
+                'APPLICATION' => $APPLICATION,
+                'PRIVATE'     => $PRIVATE,
+                'TRUE'        => $TRUE,
+                'FALSE'       => $FALSE,
+                'BEGIN'       => $BEGIN,
+                'END'         => $END,
+                'DEFINITIONS' => $DEFINITIONS,
+                'EXPLICIT'    => $EXPLICIT,
+                'ENUMERATED'  => $ENUMERATED,
+                'EXPORTS'     => $EXPORTS,
+                'IMPORTS'     => $IMPORTS,
+                'REAL'        => $REAL,
+                'INCLUDES'    => $INCLUDES,
+                'MIN'         => $MIN,
+                'MAX'         => $MAX,
+                'SIZE'        => $SIZE,
+                'FROM'        => $FROM,
+                'WITH'        => $WITH,
+                'COMPONENT'   => $COMPONENT,
+                'PRESENT'     => $PRESENT,
+                'ABSENT'      => $ABSENT,
+                'DEFINED'     => $DEFINED,
+                'BY'          => $BY,
+                'TAGS'        => $TAGS,
+
+                'MACRO'       => $MACRO,
+                'TYPE'        => $TYPE,
+                'NOTATION'    => $NOTATION,
+                'VALUE'       => $VALUE,
+
+                'MACROTYPE'   => $MACROTYPE,
+                'MACROVALUE'  => $MACROVALUE,
+};
+
 ######################################################################
 
 # Create the standard tokens
@@ -172,10 +227,10 @@ sub add_token {
 # The 'heart' of the compiler: the parser
 sub yylex {
   my $self = shift;
-  my $s = $self->{'stream'};
-  my ($c, $val);
 
-  $c = ' '; # initialization.
+  my $s = $self->{'stream'};
+  my $val;
+  my $c = ' '; # initialization.
   CHAR: while ($c ne '' && $c !~ m/^[A-Za-z0-9:=,\{\}<.\(\)\[\]\'\">|]$/o) {
     # remove useless blanks and comments
     1 while ($c = $s->getc) eq ' ' || $c eq "\t" || $c eq "\n";
@@ -189,12 +244,8 @@ sub yylex {
 	  return 0 if $c eq ''; # End of file.
 	  if ($c eq '-') {
 	    $c = $s->getc;
-	    return 0 if $c eq '';
-	    if ($c eq "\n" || $c eq '-') { # End of comment.
-	      $c = $s->getc;
-	      return 0 if $c eq '';
-	      next CHAR;
-	    }
+	    return 0 if $c eq ''; # End of file.
+	    next CHAR if $c eq "\n" || $c eq '-'; # End of comment.
 	  }
 	  next CHAR if $c eq "\n"; # End of comment.
 	}
@@ -219,7 +270,7 @@ sub yylex {
     return (ord ($c), $c);
   }
   if ($c =~ m/^[>|]/o) {
-    # it is a single extention characters
+    # it is a single extension characters
     return (ord ($c), $c);
   }
   if ($c eq '\'') { # it can be a cstring or a hstring.
@@ -239,7 +290,6 @@ sub yylex {
 	$c = 'H';
 	$val = uc $val;
       }
-      print "coucou\n";
       if ($c eq 'B' && $val =~ m/^$ITEM_BINARYSTRING$/o) {
 	return ($BSTRING, $val);
       }
@@ -329,57 +379,8 @@ sub yylex {
       if ($c !~ m/[A-Za-z0-9]/o) {
 	$s->ungetc if $c;
 
-	return ($BOOLEAN, $val)     if $val eq 'BOOLEAN';
-	return ($INTEGER, $val)     if $val eq 'INTEGER';
-	return ($BIT, $val)         if $val eq 'BIT';
-	return ($STRING, $val)      if $val eq 'STRING';
-	return ($OCTET, $val)       if $val eq 'OCTET';
-	return ($NULL, $val)        if $val eq 'NULL';
-	return ($SEQUENCE, $val)    if $val eq 'SEQUENCE';
-	return ($OF, $val)          if $val eq 'OF';
-	return ($SET, $val)         if $val eq 'SET';
-	return ($IMPLICIT, $val)    if $val eq 'IMPLICIT';
-	return ($CHOICE, $val)      if $val eq 'CHOICE';
-	return ($ANY, $val)         if $val eq 'ANY';
-	return ($EXTERNAL, $val)    if $val eq 'EXTERNAL';
-	return ($OBJECT, $val)      if $val eq 'OBJECT';
-	return ($IDENTIFIER, $val)  if $val eq 'IDENTIFIER';
-	return ($OPTIONAL, $val)    if $val eq 'OPTIONAL';
-	return ($DEFAULT, $val)     if $val eq 'DEFAULT';
-	return ($COMPONENTS, $val)  if $val eq 'COMPONENTS';
-	return ($UNIVERSAL, $val)   if $val eq 'UNIVERSAL';
-	return ($APPLICATION, $val) if $val eq 'APPLICATION';
-	return ($PRIVATE, $val)     if $val eq 'PRIVATE';
-	return ($TRUE, $val)        if $val eq 'TRUE';
-	return ($FALSE, $val)       if $val eq 'FALSE';
-	return ($BEGIN, $val)       if $val eq 'BEGIN';
-	return ($END, $val)         if $val eq 'END';
-	return ($DEFINITIONS, $val) if $val eq 'DEFINITIONS';
-	return ($EXPLICIT, $val)    if $val eq 'EXPLICIT';
-	return ($ENUMERATED, $val)  if $val eq 'ENUMERATED';
-	return ($EXPORTS, $val)     if $val eq 'EXPORTS';
-	return ($IMPORTS, $val)     if $val eq 'IMPORTS';
-	return ($REAL, $val)        if $val eq 'REAL';
-	return ($INCLUDES, $val)    if $val eq 'INCLUDES';
-	return ($MIN, $val)         if $val eq 'MIN';
-	return ($MAX, $val)         if $val eq 'MAX';
-	return ($SIZE, $val)        if $val eq 'SIZE';
-	return ($FROM, $val)        if $val eq 'FROM';
-	return ($WITH, $val)        if $val eq 'WITH';
-	return ($COMPONENT, $val)   if $val eq 'COMPONENT';
-	return ($PRESENT, $val)     if $val eq 'PRESENT';
-	return ($ABSENT, $val)      if $val eq 'ABSENT';
-	return ($DEFINED, $val)     if $val eq 'DEFINED';
-	return ($BY, $val)          if $val eq 'BY';
-	return ($TAGS, $val)        if $val eq 'TAGS';
-
-	return ($MACRO, $val)       if $val eq 'MACRO';
-	return ($TYPE, $val)        if $val eq 'TYPE';
-	return ($NOTATION, $val)    if $val eq 'NOTATION';
-	return ($VALUE, $val)       if $val eq 'VALUE';
-
-	return ($MACROTYPE, $val)   if $val eq 'type';
-	return ($MACROVALUE, $val)  if $val eq 'value';
+	# Is it a known keyword ?
+	return ($$keywords{$val}, $val) if defined $$keywords{$val};
 
 	# TypeReference/ModuleReference/MacroReference/ProductionReference/
         # LocalTypeReference
@@ -410,6 +411,7 @@ sub initialize {
   my $self = shift;
 
   $self->{'token_list'} = [];
+  $self->{'srcpath'}    = [];
 
   # extension of the produced files
   $self->{'dumpext'} = ".dump";
@@ -424,6 +426,8 @@ sub initialize {
 
   # '1001'b is invalid (must be '1001'B) but is sometimes used in SNMP MIBs.
   $self->{'allow_lowcase_bstrings'} = 0;
+
+  $self->{'allow_keyword_any'} = 1;
 
   # Add the 3 roots of the tree.
   # These nodes cannot be specified using valid ASN.1 clauses.
@@ -457,7 +461,7 @@ sub get_token {
     $self->{'lineno'} = $$temp[2];
   }
   else {
-    ($res, $k) = $self->yylex ();
+    ($res, $k) = $self->yylex();
     $self->{'lineno'} = $self->{'stream'}->lineno;
   }
   print "DEBUG: token='" . ($res ? $$TOKEN[$res] : $res) . "' value='" .
@@ -509,7 +513,7 @@ sub compile {
     if $self->{'make_dump'} && !$outdir;
   my $dir = $self->{'srcpath'} ||
     die "Error: you MUST specify a path using add_path()\n";
-  my $ext = $self->extentions || [ '' ];
+  my $ext = $self->extensions || [ '' ];
   my $windir;
   my $extfile;
   my @dirtmp = @$dir;
@@ -539,7 +543,11 @@ sub compile {
 	if ($v) {
 	  map { $self->{'nodes'}{$_} = $$v{'nodes'}{$_} } keys %{$$v{'nodes'}};
 	  map { $self->{'types'}{$_} = $$v{'types'}{$_} } keys %{$$v{'types'}};
-	  map { $self->{'tree'}{$_}  = $$v{'tree'}{$_}  } keys %{$$v{'tree'} };
+	  for my $node (keys %{$$v{'tree'}}) {
+	    for my $son (keys %{$$v{'tree'}{$node}}) {
+	      $self->{'tree'}{$node}{$son} = $$v{'tree'}{$node}{$son};
+	    }
+	  }
 	  map { $self->{'traps'}{$_} = $$v{'traps'}{$_} } keys %{$$v{'traps'}};
 	  map { push @{$self->{'macros'}}, $_ } @{$$v{'macros'}};
 	}
@@ -558,7 +566,7 @@ sub compile {
   # create a new MIB object
   my $mib = new SNMP::MIB::Compiler;
   $mib->repository($self->repository);
-  $mib->extentions($self->extentions);
+  $mib->extensions($self->extensions);
   $mib->{'srcpath'} = $self->{'srcpath'};
 
   $mib->{'make_dump'}  = $self->{'make_dump'};
@@ -613,9 +621,14 @@ sub compile {
   # insert this MIB into the current object
   map { $self->{'nodes'}{$_} = $mib->{'nodes'}{$_} } keys %{$mib->{'nodes'}};
   map { $self->{'types'}{$_} = $mib->{'types'}{$_} } keys %{$mib->{'types'}};
-  map { $self->{'tree'}{$_}  = $mib->{'tree'}{$_}  } keys %{$mib->{'tree'} };
   map { $self->{'traps'}{$_} = $mib->{'traps'}{$_} } keys %{$mib->{'traps'}};
   map { push @{$self->{'macros'}}, $_ } @{$mib->{'macros'}};
+
+  for my $node (keys %{$mib->{'tree'}}) {
+    for my $son (keys %{$self->{'tree'}{$node}}) {
+      $self->{'tree'}{$node}{$son} = $mib->{'tree'}{$node}{$son};
+    }
+  }
   $self->create_tree();
   $self;
 }
@@ -636,8 +649,12 @@ sub load {
       if ($v) {
 	map { $self->{'nodes'}{$_} = $$v{'nodes'}{$_} } keys %{$$v{'nodes'}};
 	map { $self->{'types'}{$_} = $$v{'types'}{$_} } keys %{$$v{'types'}};
-	map { $self->{'tree'}{$_}  = $$v{'tree'}{$_}  } keys %{$$v{'tree'} };
 	map { $self->{'traps'}{$_} = $$v{'traps'}{$_} } keys %{$$v{'traps'}};
+	for my $node (keys %{$$v{'tree'}}) {
+	  for my $son (keys %{$$v{'tree'}{$node}}) {
+	    $self->{'tree'}{$node}{$son} = $$v{'tree'}{$node}{$son};
+	  }
+	}
 	map { push @{$self->{'macros'}}, $_ } @{$$v{'macros'}};
       }
       $fh->close;
@@ -658,7 +675,6 @@ sub parse_Module {
   ($token, $mibname) = $self->get_token('TYPEMODREFERENCE');
   $self->{'name'} = $mibname;
   $self->get_token('DEFINITIONS');
-  # $self->get_token('TagDefault'); # EXPLICIT TAGS | IMPLICIT TAGS | <empty>
   $self->get_token('ASSIGNMENT');
   $self->get_token('BEGIN');
   ($token, $value) = $self->get_token();
@@ -678,6 +694,7 @@ sub parse_Module {
 	$self->get_token('ASSIGNMENT');
 	my $oid = $self->parse_oid();
 	$self->{'nodes'}{$assign}{'oid'} = $oid;
+	$self->{'nodes'}{$assign}{'type'} = 'OBJECT IDENTIFIER';
       }
       elsif ($token == $INTEGER) {
 	$self->get_token('ASSIGNMENT');
@@ -686,39 +703,49 @@ sub parse_Module {
       }
       elsif ($value eq 'OBJECT-TYPE') {
 	$self->{'nodes'}{$assign} = $self->parse_objecttype();
+	return undef unless defined $self->{'nodes'}{$assign};
+	$self->{'nodes'}{$assign}{'type'} = 'OBJECT-TYPE';
       }
       elsif ($value eq 'OBJECT-IDENTITY') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_objectidentity();
+	$self->{'nodes'}{$assign}{'type'} = 'OBJECT-IDENTITY';
       }
       elsif ($value eq 'MODULE-IDENTITY') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_moduleidentity();
+	$self->{'nodes'}{$assign}{'type'} = 'MODULE-IDENTITY';
       }
       elsif ($value eq 'MODULE-COMPLIANCE') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_modulecompliance();
+	$self->{'nodes'}{$assign}{'type'} = 'MODULE-COMPLIANCE';
       }
       elsif ($value eq 'OBJECT-GROUP') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_objectgroup();
+	$self->{'nodes'}{$assign}{'type'} = 'OBJECT-GROUP';
       }
       elsif ($value eq 'NOTIFICATION-GROUP') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_notificationgroup();
+	$self->{'nodes'}{$assign}{'type'} = 'NOTIFICATION-GROUP';
       }
       elsif ($value eq 'AGENT-CAPABILITIES') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_agentcapabilities();
+	$self->{'nodes'}{$assign}{'type'} = 'AGENT-CAPABILITIES';
       }
       elsif ($value eq 'TRAP-TYPE') {
 	# as defined in RFC 1215
 	die "Syntax error at '$value'" unless $self->{'accept_smiv1'};
 	$self->{'traps'}{$assign} = $self->parse_traptype();
+	$self->{'traps'}{$assign}{'type'} = 'TRAP-TYPE';
       }
       elsif ($value eq 'NOTIFICATION-TYPE') {
 	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
 	$self->{'traps'}{$assign} = $self->parse_notificationtype();
+	$self->{'traps'}{$assign}{'type'} = 'NOTIFICATION-TYPE';
       }
       else {
 	die "Syntax error at '$value'";
@@ -781,9 +808,10 @@ sub resolve_oid {
   my $node = shift;
 
   return $node unless defined $node;                  # no node
-  return $node unless defined $self->{'nodes'}{$node} ||
-                      defined $self->{'root'}{$node}; # no such node
-
+  return $node unless defined $self->{'nodes'}{$node} &&
+    scalar keys %{$self->{'nodes'}{$node}} ||
+      defined $self->{'root'}{$node} &&
+	scalar keys %{$self->{'root'}{$node}};        # no such node
   # copy the OID if needed
   if (defined $self->{'nodes'}{$node}{'oid'} &&
       !defined $self->{'nodes'}{$node}{'OID'}) {
@@ -802,9 +830,35 @@ sub resolve_oid {
       @{$self->{'nodes'}{$$list[0]}{'OID'}} =
 	@{$self->{'nodes'}{$$list[0]}{'oid'}};
     }
-    splice @$list, 0, 1, defined $self->{'nodes'}{$$list[0]} ?
+    my @l = @$list;
+    if (defined $self->{'nodes'}{$$list[0]}) {
+      my $eq = 1;
+      if ($#{$self->{'nodes'}{$$list[0]}{'OID'}} ==
+	  $#{$self->{'nodes'}{$$list[0]}{'oid'}}) {
+	my $i = -1;
+	for (@{$self->{'nodes'}{$$list[0]}{'OID'}}) {
+	  $i++;
+	  $eq = 0, last unless $ {$self->{'nodes'}{$$list[0]}{'OID'}}[$i]
+	    eq $ {$self->{'nodes'}{$$list[0]}{'oid'}}[$i];
+	}
+	unless ($eq) {
+	  my @a = @{$self->{'nodes'}{$$list[0]}{'oid'}};
+	  my @l = @{$self->{'nodes'}{$$list[0]}{'OID'}};
+	  shift @l;
+	  my $last = pop @l;
+	  for my $elem (@l) {
+	    last unless $elem =~ m/^\d+$/o;
+	    my $o = shift @a;
+	    $self->{'tree'}{$o}{$elem} = $a[0];
+	  }
+	  $self->{'tree'}{$a[0]}{$last} = $node if scalar @a == 1;
+	}
+      }
+    }
+    splice @$list, 0, 1, defined $self->{'nodes'}{$$list[0]} &&
+      scalar keys %{$self->{'nodes'}{$$list[0]}} ?
       @{$self->{'nodes'}{$$list[0]}{'OID'}} :
-      @{$self->{'root'}{$$list[0]}{'oid'}};
+	@{$self->{'root'}{$$list[0]}{'oid'}};
   }
   for my $l (@$list) {
     if (defined $self->{'nodes'}{$l}) {
@@ -903,7 +957,8 @@ sub parse_subtype {
 	die "Syntax error: must be ')' or '|'" unless $value eq ')' ||
 	    $value eq '|';
       }
-      return scalar @$list == 1 ? $$list[0] : { 'choice' => $list };
+      return scalar @$list == 1 ? { 'value' => $$list[0] } :
+	{ 'choice' => $list };
     }
   }
   elsif ($value eq '{') {
@@ -980,6 +1035,11 @@ sub parse_type {
   }
   elsif ($token == $NULL) {
     return { 'type' => "NULL" };
+  }
+  elsif ($token == $ANY && $self->{'allow_keyword_any'}) {
+    # ANY is only valid in ASN.1.. but nor in SMI, nor SMIv2.
+    # As it is used in RFC 1157, we must allow it :(
+    return { 'type' => "ANY" };
   }
   elsif ($token == $CHOICE) { # choices
     # CHOICE { va ta, vb tb, vc tc }
@@ -1723,9 +1783,9 @@ sub parse_objecttype {
   else {
     die "Syntax error. 'SYNTAX' needed";
   }
-  if ($self->{'accept_smiv2'} && $value eq 'UNIT') {
+  if ($self->{'accept_smiv2'} && $value eq 'UNITS') {
     ($token, $value) = $self->get_token('CSTRING');
-    $$data{'unit'} = $value;
+    $$data{'units'} = $value;
     ($token, $value) = $self->get_token();
   }
   if ($value eq 'ACCESS' || $value eq 'MAX-ACCESS') {
@@ -1969,10 +2029,10 @@ sub import_modules {
   my $self = shift;
 
   for my $k (keys %{$self->{'imports'}}) {
-    print "DEBUG: importing $k...\n" if  $self->{'debug_lexer'};
+    print "DEBUG: importing $k...\n" if $self->{'debug_lexer'};
     my $mib = new SNMP::MIB::Compiler();
     $mib->repository($self->repository);
-    $mib->extentions($self->extentions);
+    $mib->extensions($self->extensions);
     $mib->{'srcpath'} = $self->{'srcpath'};
 
     $mib->{'make_dump'}  = $self->{'make_dump'};
@@ -1989,20 +2049,22 @@ sub import_modules {
     }
     $mib->load($k) || $mib->compile($k);
     for my $item (@{$self->{'imports'}{$k}}) {
+      print "DEBUG: importing symbol $item from $k for $self->{'name'}...\n"
+	if $self->{'debug_lexer'};
       if (defined $mib->{'nodes'}{$item}) {
 	# resolve OID to break the dependencies
-	$mib->resolve_oid($item);
+	my @a = split /\./, $mib->convert_oid($mib->resolve_oid($item));
 	my @l = @{$mib->{'nodes'}{$item}{'OID'}};
-	my $node;
-	for my $id (keys %{$mib->{'root'}}) {
-	  $node = $id, last if $l[0] == $mib->{'root'}{$id}{'oid'}[0];
-	}
-	die "this should not happen !!" unless defined $node;
+	$a[$#a] = $l[$#l];
+	@{$mib->{'nodes'}{$item}{'oid'}} = @a;
 	shift @l;
+	my $last = pop @l;
 	for my $elem (@l) {
-	  $self->{'tree'}{$node}{$elem} = $mib->{'tree'}{$node}{$elem};
-	  $node = $mib->{'tree'}{$node}{$elem};
+	  last unless $elem =~ m/^\d+$/o;
+	  my $o = shift @a;
+	  $self->{'tree'}{$o}{$elem} = $a[0];
 	}
+	$self->{'tree'}{$a[0]}{$last} = $item if scalar @a == 1;
 	$self->{'nodes'}{$item} = $mib->{'nodes'}{$item};
       }
       elsif (defined $mib->{'types'}{$item}) {
@@ -2037,25 +2099,25 @@ sub add_path {
   while (defined (my $path = shift)) {
     push @{$self->{'srcpath'}}, $path;
   }
-  @$self->{'srcpath'};
+  @{$self->{'srcpath'}};
 }
 
-# List of possible MIB filename extentions
-sub extentions {
+# List of possible MIB filename extensions
+sub extensions {
   my $self = shift;
   my $ext = shift;
 
-  $self->{'extentions'} = $ext if defined $ext;
-  return $self->{'extentions'};
+  $self->{'extensions'} = $ext if defined $ext;
+  return $self->{'extensions'};
 }
 
-# Add some possible MIB filename extentions
-sub add_extention {
+# Add some possible MIB filename extensions
+sub add_extension {
   my $self = shift;
 
-  croak "Usage: Compiler::extention(ext1[,ext2[,ext3]])" if $#_ == -1;
+  croak "Usage: Compiler::extension(ext1[,ext2[,ext3]])" if $#_ == -1;
   while (defined (my $ext = shift)) {
-    push @{$self->{'extentions'}}, $ext;
+    push @{$self->{'extensions'}}, $ext;
   }
 }
 
@@ -2102,7 +2164,7 @@ sub tree {
     $s .= $node . "\n";
     $s .= "  |\n";
   }
-  for my $n (sort keys %{$self->{'tree'}{$node}}) {
+  for my $n (sort { $a <=> $b } keys %{$self->{'tree'}{$node}}) {
     my $new = $self->{'tree'}{$node}{$n};
     $s .= "  ";
     $s .= " " x ($inc * $level) . "+-- ";
@@ -2198,7 +2260,7 @@ SNMP::MIB::Compiler - a MIB Compiler supporting SMIv1 and SMIv2
     $mib->add_path('./mibs', '/foo/bar/mibs');
 
     # possibly using these extensions...
-    $mib->add_extention('', '.mib', '.my');
+    $mib->add_extension('', '.mib', '.my');
 
     # store the compiled MIBs there..
     $mib->repository('./out');
@@ -2296,20 +2358,20 @@ Example:
     # to cwd) and in "/foo/bar/mibs" (absolute path)
     $mib->add_path('./mibs', '/foo/bar/mibs');
 
-=item C<add_extention>
+=item C<add_extension>
 
-C<SNMP::MIB::Compiler::add_extention(e1[,e2[,e3]])> I<object method>
+C<SNMP::MIB::Compiler::add_extension(e1[,e2[,e3]])> I<object method>
 
-Add one or more extentions to the extention list. These extensions are
+Add one or more extensions to the extension list. These extensions are
 used to locate a MIB file when the 'compile' method is invoqued. All
-extentions are tested for each directory specified by the add_path()
+extensions are tested for each directory specified by the add_path()
 method until one match.
-The current list of extentions is returned.
+The current list of extensions is returned.
 
 Example:
 
     $mib->add_path('./mibs', '/foo/bar/mibs');
-    $mib->add_extention('', '.mib');
+    $mib->add_extension('', '.mib');
     $mib->compile('FOO');
 
     The order is "./mibs/FOO", "./mibs/FOO.mib", "/foo/bar/mibs/FOO"
@@ -2342,8 +2404,8 @@ the repository and is newer than the given file, it is used
 instead of a real compilation (see the 'use_dump' attribute).
 The compiler can be recursive if IMPORTS clauses are followed
 (see the 'do_imports' attribute) and in that case, uncompiled
-MIB names must be explict according to paths and extentions
-critaeria (see add_path() and add_extentions() methods).
+MIB names must be explict according to paths and extensions
+critaeria (see add_path() and add_extensions() methods).
 The current object is returned.
 
 =item C<load>

@@ -1,9 +1,6 @@
--- extracted from rfc2580.txt
+-- extracted from rfc1904.txt
 
 SNMPv2-CONF DEFINITIONS ::= BEGIN
-
-IMPORTS ObjectName, NotificationName, ObjectSyntax
-                                               FROM SNMPv2-SMI;
 
 -- definitions for conformance groups
 
@@ -24,7 +21,7 @@ BEGIN
                   Object
                 | Objects "," Object
     Object ::=
-                  value(ObjectName)
+                  value(Name ObjectName)
 
     Status ::=
                   "current"
@@ -35,9 +32,10 @@ BEGIN
                   "REFERENCE" Text
                 | empty
 
-    -- a character string as defined in [2]
-    Text ::= value(IA5String)
+    -- uses the NVT ASCII character set
+    Text ::= """" string """"
 END
+
 
 -- more definitions for conformance groups
 
@@ -58,7 +56,7 @@ BEGIN
                   Notification
                 | Notifications "," Notification
     Notification ::=
-                  value(NotificationName)
+                  value(Name NotificationName)
 
     Status ::=
                   "current"
@@ -69,9 +67,10 @@ BEGIN
                   "REFERENCE" Text
                 | empty
 
-    -- a character string as defined in [2]
-    Text ::= value(IA5String)
+    -- uses the NVT ASCII character set
+    Text ::= """" string """"
 END
+
 
 -- definitions for compliance statements
 
@@ -92,11 +91,12 @@ BEGIN
                 | "obsolete"
 
     ReferPart ::=
-                  "REFERENCE" Text
-                | empty
+                "REFERENCE" Text
+              | empty
 
     ModulePart ::=
                   Modules
+                | empty
     Modules ::=
                   Module
                 | Modules Module
@@ -107,13 +107,12 @@ BEGIN
                   CompliancePart
 
     ModuleName ::=
-                  -- identifier must start with uppercase letter
-                  identifier ModuleIdentifier
-                  -- must not be empty unless contained
-                  -- in MIB Module
+                  modulereference ModuleIdentifier
+                -- must not be empty unless contained
+                -- in MIB Module
                 | empty
     ModuleIdentifier ::=
-                  value(OBJECT IDENTIFIER)
+                  value(ModuleID OBJECT IDENTIFIER)
                 | empty
 
     MandatoryPart ::=
@@ -124,7 +123,7 @@ BEGIN
                   Group
                 | Groups "," Group
     Group ::=
-                  value(OBJECT IDENTIFIER)
+                  value(Group OBJECT IDENTIFIER)
 
     CompliancePart ::=
                   Compliances
@@ -138,35 +137,25 @@ BEGIN
                 | Object
 
     ComplianceGroup ::=
-                  "GROUP" value(OBJECT IDENTIFIER)
+                  "GROUP" value(Name OBJECT IDENTIFIER)
                   "DESCRIPTION" Text
 
     Object ::=
-                  "OBJECT" value(ObjectName)
+                  "OBJECT" value(Name ObjectName)
                   SyntaxPart
                   WriteSyntaxPart
                   AccessPart
                   "DESCRIPTION" Text
 
     -- must be a refinement for object's SYNTAX clause
-    SyntaxPart ::= "SYNTAX" Syntax
+    SyntaxPart ::=
+                  "SYNTAX" type(SYNTAX)
                 | empty
 
     -- must be a refinement for object's SYNTAX clause
-    WriteSyntaxPart ::= "WRITE-SYNTAX" Syntax
+    WriteSyntaxPart ::=
+                  "WRITE-SYNTAX" type(WriteSYNTAX)
                 | empty
-
-    Syntax ::=    -- Must be one of the following:
-                       -- a base type (or its refinement),
-                       -- a textual convention (or its refinement), or
-                       -- a BITS pseudo-type
-                  type
-                | "BITS" "{" NamedBits "}"
-
-    NamedBits ::= NamedBit
-                | NamedBits "," NamedBit
-
-    NamedBit ::= identifier "(" number ")" -- number is nonnegative
 
     AccessPart ::=
                   "MIN-ACCESS" Access
@@ -178,9 +167,10 @@ BEGIN
                 | "read-write"
                 | "read-create"
 
-    -- a character string as defined in [2]
-    Text ::= value(IA5String)
+    -- uses the NVT ASCII character set
+    Text ::= """" string """"
 END
+
 
 -- definitions for capabilities statements
 
@@ -201,8 +191,8 @@ BEGIN
                 | "obsolete"
 
     ReferPart ::=
-                  "REFERENCE" Text
-                | empty
+                "REFERENCE" Text
+              | empty
 
     ModulePart ::=
                   Modules
@@ -217,17 +207,16 @@ BEGIN
                   VariationPart
 
     ModuleName ::=
-                  -- identifier must start with uppercase letter
                   identifier ModuleIdentifier
     ModuleIdentifier ::=
-                  value(OBJECT IDENTIFIER)
+                  value(ModuleID OBJECT IDENTIFIER)
                 | empty
 
     Groups ::=
                   Group
                 | Groups "," Group
     Group ::=
-                  value(OBJECT IDENTIFIER)
+                  value(Name OBJECT IDENTIFIER)
 
     VariationPart ::=
                   Variations
@@ -241,12 +230,12 @@ BEGIN
                 | NotificationVariation
 
     NotificationVariation ::=
-                  "VARIATION" value(NotificationName)
+                  "VARIATION" value(Name NotificationName)
                   AccessPart
                   "DESCRIPTION" Text
 
     ObjectVariation ::=
-                  "VARIATION" value(ObjectName)
+                  "VARIATION" value(Name ObjectName)
                   SyntaxPart
                   WriteSyntaxPart
                   AccessPart
@@ -255,23 +244,14 @@ BEGIN
                   "DESCRIPTION" Text
 
     -- must be a refinement for object's SYNTAX clause
-    SyntaxPart ::= "SYNTAX" Syntax
+    SyntaxPart ::=
+                  "SYNTAX" type(SYNTAX)
                 | empty
 
-    WriteSyntaxPart ::= "WRITE-SYNTAX" Syntax
+    -- must be a refinement for object's SYNTAX clause
+    WriteSyntaxPart ::=
+                  "WRITE-SYNTAX" type(WriteSYNTAX)
                 | empty
-
-    Syntax ::=    -- Must be one of the following:
-                       -- a base type (or its refinement),
-                       -- a textual convention (or its refinement), or
-                       -- a BITS pseudo-type
-                  type
-                | "BITS" "{" NamedBits "}"
-
-    NamedBits ::= NamedBit
-                | NamedBits "," NamedBit
-
-    NamedBit ::= identifier "(" number ")" -- number is nonnegative
 
     AccessPart ::=
                   "ACCESS" Access
@@ -290,31 +270,21 @@ BEGIN
     CreationPart ::=
                   "CREATION-REQUIRES" "{" Cells "}"
                 | empty
+
     Cells ::=
                   Cell
                 | Cells "," Cell
+
     Cell ::=
-                  value(ObjectName)
+                  value(Cell ObjectName)
 
-    DefValPart ::= "DEFVAL" "{" Defvalue "}"
+    DefValPart ::=
+                  "DEFVAL" "{" value(Defval ObjectSyntax) "}"
                 | empty
 
-    Defvalue ::=  -- must be valid for the object's syntax
-                  -- in this macro's SYNTAX clause, if present,
-                  -- or if not, in object's OBJECT-TYPE macro
-                  value(ObjectSyntax)
-                | "{" BitsValue "}"
-
-    BitsValue ::= BitNames
-                | empty
-
-    BitNames ::=  BitName
-                | BitNames "," BitName
-
-    BitName ::= identifier
-
-    -- a character string as defined in [2]
-    Text ::= value(IA5String)
+    -- uses the NVT ASCII character set
+    Text ::= """" string """"
 END
+
 
 END

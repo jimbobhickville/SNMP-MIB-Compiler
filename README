@@ -36,3 +36,10 @@
             make
             make test
             make pure_install
+
+  NOTES
+    This package contains 2 sample programs :
+      - mc.pl : a command-line MIB compiler.
+      - browser.pl : a graphical MIB browser (requires Tk).
+        (not finished yet)
+
