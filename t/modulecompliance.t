@@ -183,7 +183,6 @@ unless ($value eq 'MODULE-COMPLIANCE') {
   exit 0;
 }
 $res = $mib->parse_modulecompliance();
-use Data::Dumper;
 $good = {
   'oid' => [ 'snmpNotifyCompliances', 2 ],
   'description' =>

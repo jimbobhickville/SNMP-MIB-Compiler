@@ -30,7 +30,6 @@
 # - remove all die()
 # - extend the API
 # - more test scripts
-# - add the version of the compiler in compiled mibs.
 
 package SNMP::MIB::Compiler;
 
@@ -43,7 +42,7 @@ use FileHandle;
 
 @ISA     = qw(Exporter);
 @EXPORT  = ();
-$VERSION = 0.03;
+$VERSION = 0.04;
 $DEBUG   = 1; # no longer used
 
 ######################################################################
@@ -55,24 +54,29 @@ my $ITEM_TYPEREFERENCE_PAT = '[A-Z](\-?[A-Za-z0-9])*';
 # Reserved character sequences (See Table 3/X.208)
 # and Additional keyword items (See §A.2.9)
 my @RESERVED_CHAR_SEQ = ('BOOLEAN', 'INTEGER', 'BIT', 'STRING', 'OCTET',
-			 'NULL', 'SEQUENCE', 'OF', 'SET', 'IMPLICIT', 'CHOICE',
-			 'ANY', 'EXTERNAL', 'OBJECT', 'IDENTIFIER', 'OPTIONAL',
-			 'DEFAULT', 'COMPONENTS', 'UNIVERSAL', 'APPLICATION',
-			 'PRIVATE', 'TRUE', 'FALSE', 'BEGIN', 'END',
-			 'DEFINITIONS', 'EXPLICIT', 'ENUMERATED', 'EXPORTS',
-			 'IMPORTS', 'REAL', 'INCLUDES', 'MIN', 'MAX', 'SIZE',
-			 'FROM', 'WITH', 'COMPONENT', 'PRESENT', 'ABSENT',
-			 'DEFINED', 'BY', 'PLUS-INFINITY', 'MINUS-INFINITY',
-			 'TAGS',
+ 			 'NULL', 'SEQUENCE', 'OF', 'SET', 'IMPLICIT', 'CHOICE',
+ 			 'ANY', 'EXTERNAL', 'OBJECT', 'IDENTIFIER', 'OPTIONAL',
+ 			 'DEFAULT', 'COMPONENTS', 'UNIVERSAL', 'APPLICATION',
+ 			 'PRIVATE', 'TRUE', 'FALSE', 'BEGIN', 'END',
+ 			 'DEFINITIONS', 'EXPLICIT', 'ENUMERATED', 'EXPORTS',
+ 			 'IMPORTS', 'REAL', 'INCLUDES', 'MIN', 'MAX', 'SIZE',
+ 			 'FROM', 'WITH', 'COMPONENT', 'PRESENT', 'ABSENT',
+ 			 'DEFINED', 'BY', 'PLUS-INFINITY', 'MINUS-INFINITY',
+ 			 'TAGS',
                          'MACRO', 'TYPE', 'NOTATION', 'VALUE', # Macro keywords
 );
 
-my $ITEM_TYPEREFERENCE = '(?!' .
-  (join '(?!\-?[A-Za-z0-9])|', @RESERVED_CHAR_SEQ) .
-  '(?!\-?[A-Za-z0-9]))' . $ITEM_TYPEREFERENCE_PAT;
+# my $ITEM_TYPEREFERENCE = '(?!' .
+#   (join '(?!\-?[A-Za-z0-9])|', @RESERVED_CHAR_SEQ) .
+#   '(?!\-?[A-Za-z0-9]))' . $ITEM_TYPEREFERENCE_PAT;
+
+my $ITEM_TYPEREFERENCE =
+  '(?!(?:' . (join '|', @RESERVED_CHAR_SEQ) . ')(?!\-?[A-Za-z0-9]))' .
+  $ITEM_TYPEREFERENCE_PAT;
 
 # Identifiers (§8.3)
-my $ITEM_IDENTIFIER = '\b[a-z](?:\-?[A-Za-z0-9])*\b';
+my $ITEM_IDENTIFIER  = '\b[a-z](?:\-?[A-Za-z0-9])*\b';
+my $ITEM_IDENTIFIER2 = '\b[a-z](?:[\-_]?[A-Za-z0-9])*\b'; # w/allow_underscore
 
 # Number item (§8.8)
 my $ITEM_NUMBER = '\b(?:0|[1-9][0-9]*)\b';
@@ -297,7 +301,7 @@ sub yylex {
       if ($c eq 'H' && $val =~ m/^$ITEM_HEXADECIMALSTRING$/o) {
 	return ($HSTRING, $val);
       }
-      print "Invalid \"$val\". See 'allow_lowcase_{b|h}strings' switches.\n";
+      warn "Invalid \"$val\". See 'allow_lowcase_{b|h}strings' switches.\n";
     }
     return 0; # Error
   }
@@ -345,20 +349,21 @@ sub yylex {
   if ($c =~ m/[a-zA-Z]/o) {
     $val = $c;
     while (1) {
-      while (($c = $s->getc) ne '' &&($c =~ m/[A-Za-z0-9]/o ||
+      while (($c = $s->getc) ne '' && ($c =~ m/[A-Za-z0-9]/o ||
 			($self->{'allow_underscore'} && $c eq '_'))) {
 	$val .= $c;
       }
       if ($c eq '-') {
-	$c = $s->getc || return 0; # a hyphen shall not be the last character
+	# a hyphen shall not be the last character
+	($c = $s->getc) ne '' || return 0;
 	if ($c eq '-') { # it is a comment.
 	  COMM: while (1) {
 	    1 while ($c = $s->getc) ne '' && $c ne '-' && $c ne "\n";
 	    last COMM; # End of file.
 	    if ($c eq '-') {
-	      $c = $s->getc || return 0;
+	      ($c = $s->getc) ne '' || return 0;
 	      if ($c eq "\n" || $c eq '-') { # End of comment.
-		$c = $s->getc || return 0;
+		($c = $s->getc) ne '' || return 0;
 		last COMM;
 	      }
 	    }
@@ -372,10 +377,12 @@ sub yylex {
 	    if $val =~ m/^$ITEM_TYPEREFERENCE$/o;
 	  # Identifier or ValueReference
 	  return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER$/o;
+	  return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER2$/o &&
+	    $self->{'allow_underscore'};
 	  return 0;
 	}
 	return 0 if $c eq '\n'; # a hyphen shall not be the last character
-	$s->ungetc if $c;
+	$s->ungetc if $c ne '';
 	$val .= "-";
       }
       if ($c !~ m/[A-Za-z0-9]/o) {
@@ -389,11 +396,14 @@ sub yylex {
 	return ($TYPEMODREFERENCE, $val) if $val =~ m/^$ITEM_TYPEREFERENCE$/o;
 	# Identifier/ValueReference/LocalValueReference
 	return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER$/o;
+	return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER2$/o &&
+	  $self->{'allow_underscore'};
+	warn "Error: \"$val\" unrecognized at line " . $s->lineno . "\n";
 	return 0;
       }
     }
   }
-  print "Error: \"$c\" unrecognized at line " . $s->lineno . "\n";
+  warn "Error: \"$c\" unrecognized at line " . $s->lineno . "\n";
   return 0;
 }
 
@@ -466,7 +476,7 @@ sub get_token {
     ($res, $k) = $self->yylex();
     $self->{'lineno'} = $self->{'stream'}->lineno;
   }
-  print "DEBUG: token='" . ($res ? $$TOKEN[$res] : $res) . "' value='" .
+  warn "DEBUG: token='" . ($res ? $$TOKEN[$res] : $res) . "' value='" .
     (defined $k ? $k : '<EOF>') . "'\n"
       if $self->{'debug_lexer'};
   die "'$needed' expected at line ", $self->{'lineno'}, " at ", (caller)[1],
@@ -482,7 +492,7 @@ sub get_token {
 sub unget_token {
   my $self = shift;
 
-  print "DEBUG: unshift\n" if $self->{'debug_lexer'};
+  warn "DEBUG: unshift\n" if $self->{'debug_lexer'};
   if (defined $self->{'current_token'}) {
     push @{$self->{'token_list'}}, [ $self->{'current_token'},
 				     $self->{'current_value'},
@@ -522,7 +532,7 @@ sub compile {
   while (my $d = shift @dirtmp) {
     map {
       my $e = $_;
-      # print "testing '$d/$file$e'\n";
+      # warn "testing '$d/$file$e'\n";
       $windir = $d, $extfile = $e, last if -e "$d/$file$e";
     } @$ext;
   }
@@ -607,11 +617,12 @@ sub compile {
       print $fh "## Compiled by SNMP::MIB::Compiler version $VERSION\n" .
 	        "## Source: $filename\n" .
                 "## Date: " . (scalar localtime (time)) ."\n\n";
-      print $fh Dumper { 'nodes'  => $mib->{'nodes'},
-			 'types'  => $mib->{'types'},
-		         'macros' => $mib->{'macros'},
-		         'tree'   => $mib->{'tree'},
-		         'traps'  => $mib->{'traps'},
+      print $fh Dumper { 'nodes'   => $mib->{'nodes'},
+			 'types'   => $mib->{'types'},
+		         'macros'  => $mib->{'macros'},
+		         'tree'    => $mib->{'tree'},
+		         'traps'   => $mib->{'traps'},
+			 'version' => $VERSION,
 		       };
       $fh->close;
     }
@@ -691,6 +702,7 @@ sub parse_Module {
     elsif ($token == $IDENTIFIER) {
       my $assign = $value;
       ($token, $value) = $self->get_token();
+      die "Syntax error at line ", $self->{'lineno'}, ".\n" unless $token;
       if ($token == $OBJECT) { # probably an OBJECT IDENTIFIER
 	$self->get_token('IDENTIFIER');
 	$self->get_token('ASSIGNMENT');
@@ -906,7 +918,7 @@ sub convert_oid {
 sub parse_one {
   my $self = shift;
 
-  print "DEBUG: Parsing one item...\n" if  $self->{'debug_lexer'};
+  warn "DEBUG: Parsing one item...\n" if  $self->{'debug_lexer'};
   # 1
   # -1..3
   # foo
@@ -941,9 +953,9 @@ sub parse_one {
 sub parse_subtype {
   my $self = shift;
 
-  print "DEBUG: Parsing a sub-type...\n" if  $self->{'debug_lexer'};
+  warn "DEBUG: Parsing a sub-type...\n" if $self->{'debug_lexer'};
   my ($token, $value) = $self->get_token();
-  if ($value eq '(') {
+  if ($token && $value eq '(') {
     ($token, $value) = $self->get_token();
     if ($token == $SIZE) {
       my $subtype = $self->parse_subtype();
@@ -959,12 +971,12 @@ sub parse_subtype {
 	die "Syntax error: must be ')' or '|'" unless $value eq ')' ||
 	    $value eq '|';
       }
-#     return scalar @$list == 1 ? { 'value' => $$list[0] } :
-# 	{ 'choice' => $list };
+      # return scalar @$list == 1 ? { 'value' => $$list[0] } :
+      #   { 'choice' => $list };
       return scalar @$list == 1 ? $$list[0] : { 'choice' => $list };
     }
   }
-  elsif ($value eq '{') {
+  elsif ($token && $value eq '{') {
     my $list = {};
     while ($value ne '}') {
       ($token, $value) = $self->get_token();
@@ -992,7 +1004,7 @@ sub parse_subtype {
 sub parse_type {
   my $self = shift;
 
-  print "DEBUG: Parsing a type...\n" if  $self->{'debug_lexer'};
+  warn "DEBUG: Parsing a type...\n" if  $self->{'debug_lexer'};
   my ($token, $value) = $self->get_token();
   if ($token == $IMPLICIT) { # implicit types
     my $type = $self->parse_type();
@@ -1015,8 +1027,13 @@ sub parse_type {
       return $subtype;
     }
     else {
-      return { 'values' => $subtype,
-	       'type'   => $type };
+      if (defined $subtype) {
+	return { 'values' => $subtype,
+		 'type'   => $type };
+      }
+      else {
+	return { 'type'   => $type };
+      }
     }
   }
   elsif ($token == $OCTET) { # octet strings
@@ -1873,8 +1890,11 @@ sub parse_objecttype {
     my $list = [];
     ($token, $value) = $self->get_token('{');
     while ($value ne '}') {
-      ($token, $value) = $self->get_token('IDENTIFIER');
-      push @$list, $value;
+      ($token, $value) = $self->get_token();
+      my $implied = 0;
+      $implied++, ($token, $value) = $self->get_token('IDENTIFIER')
+	if $value eq 'IMPLIED';
+      push @$list, { 'value' => $value, 'implied' => $implied };
       ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
     }
     $$data{'index'} = $list;
@@ -2039,7 +2059,7 @@ sub import_modules {
   my $self = shift;
 
   for my $k (keys %{$self->{'imports'}}) {
-    print "DEBUG: importing $k...\n" if $self->{'debug_lexer'};
+    warn "DEBUG: importing $k...\n" if $self->{'debug_lexer'};
     my $mib = new SNMP::MIB::Compiler();
     $mib->repository($self->repository);
     $mib->extensions($self->extensions);
@@ -2059,7 +2079,7 @@ sub import_modules {
     }
     $mib->load($k) || $mib->compile($k);
     for my $item (@{$self->{'imports'}{$k}}) {
-      print "DEBUG: importing symbol $item from $k for $self->{'name'}...\n"
+      warn "DEBUG: importing symbol $item from $k for $self->{'name'}...\n"
 	if $self->{'debug_lexer'};
       if (defined $mib->{'nodes'}{$item}) {
 	# resolve OID to break the dependencies
@@ -2088,7 +2108,7 @@ sub import_modules {
 	warn "Warning: can't find '$item' in $k\n" unless $found;
       }
     }
-    print "DEBUG: $k imported.\n" if $self->{'debug_lexer'};
+    warn "DEBUG: $k imported.\n" if $self->{'debug_lexer'};
   }
 }
 

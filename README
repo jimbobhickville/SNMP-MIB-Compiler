@@ -40,7 +40,7 @@
   NOTES
 
     This package contains 2 sample programs :
-      - mc.pl : a command-line MIB compiler.
-      - browser.pl : a graphical MIB browser (requires Tk).
+      - mibcompiler : a small command-line MIB compiler.
+      - mibbrowser : a graphical MIB browser (requires Tk).
         (not finished yet)
 

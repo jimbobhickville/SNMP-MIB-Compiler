@@ -9,4 +9,5 @@ WriteMakefile(NAME         => "SNMP::MIB::Compiler",
 				'Data::Compare' => 0 },
 	      clean        => { FILES => '*.bak *.old out/* ' .
 				   'lib/*/*/*~ lib/*/*/*/*~' },
+	      EXE_FILES    => [ qw(mibcompiler mibbrowser) ],
               );
