@@ -1,7 +1,7 @@
 ^Makefile(\.old)?$
 ^MANIFEST\.bak$
 ^(out|doc|repository)/
-^mibs/(cisco|com21)
+^mibs/(cisco|com21|Centillion-1000)
 .*~$
 ^blib/
 (^|/)TAGS$

@@ -42,7 +42,7 @@ use FileHandle;
 
 @ISA     = qw(Exporter);
 @EXPORT  = ();
-$VERSION = 0.04;
+$VERSION = 0.05;
 $DEBUG   = 1; # no longer used
 
 ######################################################################
@@ -237,19 +237,21 @@ sub yylex {
   my $c = ' '; # initialization.
   CHAR: while ($c ne '' && $c !~ m/^[A-Za-z0-9:=,\{\}<.\(\)\[\]\'\">|]$/o) {
     # remove useless blanks and comments
-    1 while ($c = $s->getc) eq ' ' || $c eq "\t" || $c eq "\n";
+    1 while ($c = $s->getc) eq ' ' || $c eq "\t" || $c eq "\n" || $c eq "\r";
     return 0 if $c eq '';
     if ($c eq '-') { # The first char of a "comment" (See §8.6)
       $c = $s->getc;
       return 0 if $c eq '';
       if ($c eq '-') { # it is a real "comment" marker
 	while (1) {
-	  1 while ($c = $s->getc) ne '' && $c ne '-' && $c ne "\n";
+	  1 while ($c = $s->getc) ne '' && $c ne '-'
+	    && $c ne "\n" && $c ne "\r";
 	  return 0 if $c eq ''; # End of file.
 	  if ($c eq '-') {
 	    $c = $s->getc;
 	    return 0 if $c eq ''; # End of file.
-	    next CHAR if $c eq "\n" || $c eq '-'; # End of comment.
+	    next CHAR if $c eq "\n" || $c eq "\r" ||
+	      $c eq '-'; # End of comment.
 	  }
 	  next CHAR if $c eq "\n"; # End of comment.
 	}
@@ -358,16 +360,17 @@ sub yylex {
 	($c = $s->getc) ne '' || return 0;
 	if ($c eq '-') { # it is a comment.
 	  COMM: while (1) {
-	    1 while ($c = $s->getc) ne '' && $c ne '-' && $c ne "\n";
+	    1 while ($c = $s->getc) ne '' && $c ne '-' &&
+	      $c ne "\n" && $c ne "\r";
 	    last COMM; # End of file.
 	    if ($c eq '-') {
 	      ($c = $s->getc) ne '' || return 0;
-	      if ($c eq "\n" || $c eq '-') { # End of comment.
+	      if ($c eq "\n" || $c eq "\r" || $c eq '-') { # End of comment.
 		($c = $s->getc) ne '' || return 0;
 		last COMM;
 	      }
 	    }
-	    next COMM if $c eq "\n"; # End of comment.
+	    next COMM if $c eq "\n" || $c eq "\r"; # End of comment.
 	  }
 	  $s->ungetc if $c;
 	  return ($PLUSINFINITY, $val) if $val eq 'PLUS-INFINITY';
@@ -381,7 +384,8 @@ sub yylex {
 	    $self->{'allow_underscore'};
 	  return 0;
 	}
-	return 0 if $c eq '\n'; # a hyphen shall not be the last character
+	return 0 if $c eq '\n' || $c eq "\r"; # a hyphen shall not be the
+	                                      # last character
 	$s->ungetc if $c ne '';
 	$val .= "-";
       }
