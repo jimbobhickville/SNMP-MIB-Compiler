@@ -11,3 +11,13 @@ WriteMakefile(NAME         => "SNMP::MIB::Compiler",
 				   'lib/*/*/*~ lib/*/*/*/*~' },
 	      EXE_FILES    => [ qw(mibcompiler mibbrowser) ],
               );
+
+sub MY::postamble {
+'
+sync-in:
+	rsync -rv -e ssh nexus:~/reseaux/devel/mib/. .
+
+sync-out:
+	rsync -rv -e ssh . nexus:~/reseaux/devel/mib/.
+';
+}

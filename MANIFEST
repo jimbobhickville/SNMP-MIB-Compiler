@@ -34,6 +34,7 @@ mibs/obsoletes/SNMPv2-SMI.rfc1902
 mibs/obsoletes/SNMPv2-TC.rfc1903
 t/agentcapabilities.t
 t/comments.t
+t/lexer.t
 t/modulecompliance.t
 t/subtypes.t
 t/typereference.t

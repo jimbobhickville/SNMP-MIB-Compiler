@@ -27,7 +27,6 @@
 # TODO:
 # - resolve constants (e.g. 'max-bindings' in SNMPv2-PDU)
 # - check a value against a syntax
-# - remove all die()
 # - extend the API
 # - more test scripts
 
@@ -42,7 +41,7 @@ use FileHandle;
 
 @ISA     = qw(Exporter);
 @EXPORT  = ();
-$VERSION = 0.05;
+$VERSION = 0.06;
 $DEBUG   = 1; # no longer used
 
 ######################################################################
@@ -89,6 +88,10 @@ my $ITEM_HEXADECIMALSTRING = '\'[A-F0-9]*\'H';
 
 # Single character items (§8.13)
 my $ITEM_SINGLECHARACTER = '[\{\}\<,\.\(\)\[\]\-;]';
+
+sub MIBERROR()  { 0 };
+sub MIBWARN()   { 1 };
+sub MIBNOTICE() { 2 };
 
 ######################################################################
 # Tokens
@@ -229,6 +232,7 @@ sub add_token {
 }
 
 # The 'heart' of the compiler: the parser
+# returns the couple token/value or the scalar 0 if something goes wrong.
 sub yylex {
   my $self = shift;
 
@@ -241,7 +245,11 @@ sub yylex {
     return 0 if $c eq '';
     if ($c eq '-') { # The first char of a "comment" (See §8.6)
       $c = $s->getc;
-      return 0 if $c eq '';
+      if ($c eq '') { # a single hyphen followed by EOF
+	$s->ungetc; # keep EOF for the next yylex call
+	$c = '-';
+	last CHAR;
+      }
       if ($c eq '-') { # it is a real "comment" marker
 	while (1) {
 	  1 while ($c = $s->getc) ne '' && $c ne '-'
@@ -286,10 +294,13 @@ sub yylex {
     while (($c = $s->getc) ne '' && $c =~ m/[0-9A-Fa-f]/o) {
       $val .= $c;
     }
-    return 0 unless $c;
+    return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+          "Unexpected EOF near \"$val\"") if $c eq '';
     if ($c eq '\'') {
       $val .= $c;
-      $c = $s->getc || return 0;
+      $c = $s->getc;
+      return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+          "Unexpected EOF near \"$val\"") if $c eq '';
       $val .= $c;
       # it must be 'B' or 'H'.
       $c = 'B' if $c eq 'b' && $self->{'allow_lowcase_bstrings'};
@@ -303,9 +314,11 @@ sub yylex {
       if ($c eq 'H' && $val =~ m/^$ITEM_HEXADECIMALSTRING$/o) {
 	return ($HSTRING, $val);
       }
-      warn "Invalid \"$val\". See 'allow_lowcase_{b|h}strings' switches.\n";
+      return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+          "Invalid \"$val\". See 'allow_lowcase_{b|h}strings' switches");
     }
-    return 0; # Error
+    return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			 "Syntax error near \"$val\"");
   }
   if ($c eq '"') { # a cstring
     $val = $c;
@@ -313,7 +326,8 @@ sub yylex {
       while (($c = $s->getc) ne '' && $c ne '"') {
 	$val .= $c;
       }
-      return 0 unless $c; # Error
+      return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			   "Unexpected EOF near \"$val\"") if $c eq '';
       $val .= $c;
       $c = $s->getc;
       if ($c eq '' || $c ne '"') {
@@ -326,15 +340,18 @@ sub yylex {
   if ($c eq ':') { # an assignment item
     $val = $c;
     $c = $s->getc;
-    return 0 if $c eq '';
+    return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			 "Unexpected EOF near \"$val\"") if $c eq '';
     if ($c ne ':') {
       $s->ungetc if $c;
     }
     else {
       $val .= $c;
       $c = $s->getc;
-      return 0 if $c eq '';
-      return 0 unless $c eq '='; # hmm.. can '::' be valid ?
+      return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			   "Unexpected EOF near \"$val\"") if $c eq '';
+      return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			   "Syntax error near \"$val\"") unless $c eq '=';
       $val .= $c;
       return ($ASSIGNMENT, $val);
     }
@@ -345,7 +362,8 @@ sub yylex {
       $val .= $c;
     }
     $s->ungetc if $c;
-    return 0 unless $val =~ m/^$ITEM_NUMBER$/;
+    return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+	"Syntax error near \"$val\"") unless $val =~ m/^$ITEM_NUMBER$/;
     return ($NUMBER, $val);
   }
   if ($c =~ m/[a-zA-Z]/o) {
@@ -356,25 +374,22 @@ sub yylex {
 	$val .= $c;
       }
       if ($c eq '-') {
+	$c = $s->getc;
 	# a hyphen shall not be the last character
-	($c = $s->getc) ne '' || return 0;
+	return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			     "Syntax error near \"$val\"")
+	  if $c eq '' || $c eq "\n" || $c eq "\r";
 	if ($c eq '-') { # it is a comment.
 	  COMM: while (1) {
 	    1 while ($c = $s->getc) ne '' && $c ne '-' &&
 	      $c ne "\n" && $c ne "\r";
-	    last COMM; # End of file.
-	    if ($c eq '-') {
-	      ($c = $s->getc) ne '' || return 0;
-	      if ($c eq "\n" || $c eq "\r" || $c eq '-') { # End of comment.
-		($c = $s->getc) ne '' || return 0;
-		last COMM;
-	      }
-	    }
-	    next COMM if $c eq "\n" || $c eq "\r"; # End of comment.
+	    last COMM if $c eq '' ||      # End of file...
+	      $c eq "\n" || $c eq "\r";   # End of comment.
+	    $c = $s->getc;
+	    last COMM if $c eq '' ||                 # End of file...
+	      $c eq "\n" || $c eq "\r" || $c eq '-'; # End of comment.
+	    $s->ungetc;
 	  }
-	  $s->ungetc if $c;
-	  return ($PLUSINFINITY, $val) if $val eq 'PLUS-INFINITY';
-	  return ($MINUSINFINITY, $val) if $val eq 'MINUS-INFINITY';
 	  # TypeReference or ModuleReference
 	  return ($TYPEMODREFERENCE, $val)
 	    if $val =~ m/^$ITEM_TYPEREFERENCE$/o;
@@ -382,10 +397,11 @@ sub yylex {
 	  return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER$/o;
 	  return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER2$/o &&
 	    $self->{'allow_underscore'};
-	  return 0;
+	  return ($PLUSINFINITY, $val) if $val eq 'PLUS-INFINITY';
+	  return ($MINUSINFINITY, $val) if $val eq 'MINUS-INFINITY';
+	  return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+			       "Syntax error near \"$val\"");
 	}
-	return 0 if $c eq '\n' || $c eq "\r"; # a hyphen shall not be the
-	                                      # last character
 	$s->ungetc if $c ne '';
 	$val .= "-";
       }
@@ -402,13 +418,15 @@ sub yylex {
 	return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER$/o;
 	return ($IDENTIFIER, $val) if $val =~ m/^$ITEM_IDENTIFIER2$/o &&
 	  $self->{'allow_underscore'};
-	warn "Error: \"$val\" unrecognized at line " . $s->lineno . "\n";
-	return 0;
+	return ($PLUSINFINITY, $val) if $val eq 'PLUS-INFINITY';
+	return ($MINUSINFINITY, $val) if $val eq 'MINUS-INFINITY';
+	return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+		      "'$val' unrecognized");
       }
     }
   }
-  warn "Error: \"$c\" unrecognized at line " . $s->lineno . "\n";
-  return 0;
+  return $self->assert(MIBERROR, $self->{'filename'}, $s->{'lineno'},
+           "'$c' unrecognized");
 }
 
 # Constructor
@@ -465,6 +483,42 @@ sub initialize {
   $self->{'do_imports'} = 1;
 }
 
+sub assert {
+  my $self  = shift;
+  my $level = shift;
+  my $file  = shift;
+  my $line  = shift;
+  my $msg   = shift;
+
+  if (defined $level) {
+    $self->{'msg'} = [] unless defined $self->{'msg'};
+    my ($cpackage, $cfile, $cline) = caller;
+    push @{$self->{'msg'}}, { 'level'    => $level,
+			      'file'     => $file,
+			      'line'     => $line,
+			      'msg'      => sprintf($msg, @_),
+			      'cpackage' => $cpackage,
+			      'cfile'    => $cfile,
+			      'cline'    => $cline,
+			    };
+    return $level;
+  }
+  else {
+    if (wantarray) {
+      return $level;
+    }
+    else {
+      my $s = "";
+      map {
+	$s .= sprintf "Error %d: %s at %s line %d.%s\n", $$_{'level'},
+	  $$_{'msg'}, $$_{'file'}, $$_{'line'},
+	    $DEBUG ? sprintf " [%s %d]", $$_{'cfile'}, $$_{'cline'}: "";
+      } @{$self->{'msg'}} if defined $self->{'msg'};
+      return $s;
+    }
+  }
+}
+
 # Get the next token from the parser
 sub get_token {
   my $self  = shift;
@@ -479,12 +533,12 @@ sub get_token {
   else {
     ($res, $k) = $self->yylex();
     $self->{'lineno'} = $self->{'stream'}->lineno;
+    return unless $res;
   }
   warn "DEBUG: token='" . ($res ? $$TOKEN[$res] : $res) . "' value='" .
-    (defined $k ? $k : '<EOF>') . "'\n"
-      if $self->{'debug_lexer'};
-  die "'$needed' expected at line ", $self->{'lineno'}, " at ", (caller)[1],
-    " line ", (caller)[2], "\n"
+    (defined $k ? $k : '<EOF>') . "'\n" if $self->{'debug_lexer'};
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		       "'$needed' expected")
     if defined $needed && $res && $$TOKEN[$res] ne $needed;
   $self->{'current_token'} = $res;
   $self->{'current_value'} = $k;
@@ -525,30 +579,40 @@ sub compile {
 
   croak "Error: you MUST specify a file to compile\n" unless $file;
   my $outdir = $self->repository;
-  die "Error: you MUST specify a repository\n"
+  croak "Error: you MUST specify a repository\n"
     if $self->{'make_dump'} && !$outdir;
-  my $dir = $self->{'srcpath'} ||
-    die "Error: you MUST specify a path using add_path()\n";
-  my $ext = $self->extensions || [ '' ];
-  my $windir;
-  my $extfile;
-  my @dirtmp = @$dir;
-  while (my $d = shift @dirtmp) {
-    map {
-      my $e = $_;
-      # warn "testing '$d/$file$e'\n";
-      $windir = $d, $extfile = $e, last if -e "$d/$file$e";
-    } @$ext;
+  my $filename;
+  if ($file =~ m|/([^/]+)$|) {
+    croak "Error: can't find $file" unless -e $file;
+    $filename = $file;
+    $file = $1;
   }
-  croak "Error: can't find $file" unless $windir;
-  my $filename = "$windir/$file$extfile";
-  push @{$self->{'filename'}}, $filename;
+  else {
+    my $dir = $self->{'srcpath'} ||
+      croak "Error: you MUST specify a path using add_path()\n";
+    my $ext = $self->extensions || [ '' ];
+    my $windir;
+    my $extfile;
+    my @dirtmp = @$dir;
+    while (my $d = shift @dirtmp) {
+      map {
+	my $e = $_;
+	# warn "testing '$d/$file$e'\n";
+	$windir = $d, $extfile = $e, last if -e "$d/$file$e";
+      } @$ext;
+    }
+    croak "Error: can't find $file" unless $windir;
+    $filename = "$windir/$file$extfile";
+  }
+  # push @{$self->{'filename'}}, $filename;
+  $self->{'filename'} = $filename;
   # my $filename = $ {$self->{'filename'}}[$#{$self->{'filename'}}];
 
   if ($self->{'use_dump'} && -e "$outdir/$file$self->{'dumpext'}") {
     if (-M $filename < -M "$outdir/$file$self->{'dumpext'}") {
-      warn "Warning: $outdir/$file$self->{'dumpext'} is older than " .
-	"$filename. Recompiling $filename...\n";
+      $self->assert(MIBNOTICE, $self->{'filename'}, $self->{'fileno'},
+		    "$outdir/$file$self->{'dumpext'} is older than " .
+		    "$filename. Recompiling $filename...");
     }
     else {
       my $v;
@@ -581,9 +645,11 @@ sub compile {
   }
   # create a new MIB object
   my $mib = new SNMP::MIB::Compiler;
+  $mib->{'filename'} = $filename;
   $mib->repository($self->repository);
   $mib->extensions($self->extensions);
   $mib->{'srcpath'} = $self->{'srcpath'};
+  push @{$mib->{'msg'}}, @{$self->{'msg'}} if defined $self->{'msg'};
 
   $mib->{'make_dump'}  = $self->{'make_dump'};
   $mib->{'use_dump'}   = $self->{'use_dump'};
@@ -601,11 +667,14 @@ sub compile {
   my $s = Stream->new($fh);
   $mib->{'stream'} = $s;
   # parse the MIB
-  $mib->parse_Module();
+  my $r = $mib->parse_Module();
+  push @{$self->{'msg'}}, @{$mib->{'msg'}} if defined $mib->{'msg'};
+
   # destroy the stream
   delete $mib->{'stream'};
   # close the file
   $fh->close;
+  return undef unless $r;
 
   # Create the MIB 'tree'
   $mib->create_tree();
@@ -679,8 +748,8 @@ sub load {
     1;
   }
   else {
-    warn "warning: can't find precompiled $file. Ignored\n"
-      if $self->{'debug_lexer'};
+    $self->assert(MIBWARN, $self->{'filename'}, $self->{'lineno'},
+	"can't find precompiled $file. Ignored\n") if $self->{'debug_lexer'};
     0;
   }
 }
@@ -689,12 +758,12 @@ sub parse_Module {
   my $self = shift;
   my ($token, $mibname, $value);
   # ModuleIdentifier
-  ($token, $mibname) = $self->get_token('TYPEMODREFERENCE');
+  (($token, $mibname) = $self->get_token('TYPEMODREFERENCE')) || return;
   $self->{'name'} = $mibname;
-  $self->get_token('DEFINITIONS');
-  $self->get_token('ASSIGNMENT');
-  $self->get_token('BEGIN');
-  ($token, $value) = $self->get_token();
+  $self->get_token('DEFINITIONS') || return;
+  $self->get_token('ASSIGNMENT') || return;
+  $self->get_token('BEGIN') || return;
+  (($token, $value) = $self->get_token()) || return;
   while ($token && $token != $END) {
     if ($token == $IMPORTS) {
       $self->{'imports'} = $self->parse_imports();
@@ -705,73 +774,90 @@ sub parse_Module {
     }
     elsif ($token == $IDENTIFIER) {
       my $assign = $value;
-      ($token, $value) = $self->get_token();
-      die "Syntax error at line ", $self->{'lineno'}, ".\n" unless $token;
+      (($token, $value) = $self->get_token()) || return;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error") unless $token;
       if ($token == $OBJECT) { # probably an OBJECT IDENTIFIER
-	$self->get_token('IDENTIFIER');
-	$self->get_token('ASSIGNMENT');
+	$self->get_token('IDENTIFIER') || return;
+	$self->get_token('ASSIGNMENT') || return;
 	my $oid = $self->parse_oid();
 	$self->{'nodes'}{$assign}{'oid'} = $oid;
 	$self->{'nodes'}{$assign}{'type'} = 'OBJECT IDENTIFIER';
       }
       elsif ($token == $INTEGER) {
-	$self->get_token('ASSIGNMENT');
-	($token, $value) = $self->get_token();
+	$self->get_token('ASSIGNMENT') || return;
+	(($token, $value) = $self->get_token()) || return;
 	$self->{'constants'}{$assign}{'value'} = $value;
       }
       elsif ($value eq 'OBJECT-TYPE') {
-	$self->{'nodes'}{$assign} = $self->parse_objecttype();
-	return undef unless defined $self->{'nodes'}{$assign};
+	$self->{'nodes'}{$assign} = $self->parse_objecttype() || return;
+	# return undef unless $self->{'nodes'}{$assign};
 	$self->{'nodes'}{$assign}{'type'} = 'OBJECT-TYPE';
       }
       elsif ($value eq 'OBJECT-IDENTITY') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
-	$self->{'nodes'}{$assign} = $self->parse_objectidentity();
+	$self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	      "Syntax error at '$value'") unless $self->{'accept_smiv2'};
+	$self->{'nodes'}{$assign} = $self->parse_objectidentity() || return;
 	$self->{'nodes'}{$assign}{'type'} = 'OBJECT-IDENTITY';
       }
       elsif ($value eq 'MODULE-IDENTITY') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_moduleidentity();
 	$self->{'nodes'}{$assign}{'type'} = 'MODULE-IDENTITY';
       }
       elsif ($value eq 'MODULE-COMPLIANCE') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_modulecompliance();
 	$self->{'nodes'}{$assign}{'type'} = 'MODULE-COMPLIANCE';
       }
       elsif ($value eq 'OBJECT-GROUP') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_objectgroup();
 	$self->{'nodes'}{$assign}{'type'} = 'OBJECT-GROUP';
       }
       elsif ($value eq 'NOTIFICATION-GROUP') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_notificationgroup();
 	$self->{'nodes'}{$assign}{'type'} = 'NOTIFICATION-GROUP';
       }
       elsif ($value eq 'AGENT-CAPABILITIES') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv2'};
 	$self->{'nodes'}{$assign} = $self->parse_agentcapabilities();
 	$self->{'nodes'}{$assign}{'type'} = 'AGENT-CAPABILITIES';
       }
       elsif ($value eq 'TRAP-TYPE') {
 	# as defined in RFC 1215
-	die "Syntax error at '$value'" unless $self->{'accept_smiv1'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv1'};
 	$self->{'traps'}{$assign} = $self->parse_traptype();
 	$self->{'traps'}{$assign}{'type'} = 'TRAP-TYPE';
       }
       elsif ($value eq 'NOTIFICATION-TYPE') {
-	die "Syntax error at '$value'" unless $self->{'accept_smiv2'};
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'")
+	  unless $self->{'accept_smiv2'};
 	$self->{'traps'}{$assign} = $self->parse_notificationtype();
 	$self->{'traps'}{$assign}{'type'} = 'NOTIFICATION-TYPE';
       }
       else {
-	die "Syntax error at '$value'";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error at '$value'");
       }
     }
     elsif ($token == $TYPEMODREFERENCE) {
       my $label = $value;
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       if ($token == $ASSIGNMENT) {
 	my $type = $self->parse_type();
 	# warn "Warning: type '$label' already defined"
@@ -780,25 +866,25 @@ sub parse_Module {
       }
       elsif ($token == $MACRO) {
 	# Skip this beast..
-	($token, $value) = $self->get_token('ASSIGNMENT');
+	(($token, $value) = $self->get_token('ASSIGNMENT')) || return;
 	while ($token && $token != $END) {
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	push @{$self->{'macros'}}, $label;
       }
       else {
-	die "unrecognized syntax '$value' ($$TOKEN[$token])...";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unrecognized syntax '$value' ($$TOKEN[$token])...");
       }
     }
     else {
-      die "received an unknown token ($$TOKEN[$token])";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "received an unknown token ($$TOKEN[$token])");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
-  if ($token != $END) {
-    die "'END' expected  at line ", $self->{'lineno'},
-	" of ${$self->{'filename'}}[$#{$self->{'filename'}}]\n";
-  }
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		       "'END' expected") unless $token == $END;
 }
 
 # Given a type, this will return the corresponding SMI (v2 or v1) type
@@ -927,23 +1013,22 @@ sub parse_one {
   # -1..3
   # foo
   # foo..bar
-  my ($token, $value) = $self->get_token();
-  die "Syntax error" unless $token;
+  (my ($token, $value) = $self->get_token()) || return;
   if ($value eq '-') { # a negative value ?
-    ($token, $value) = $self->get_token();
-    die "Syntax error" unless $token;
-    die "Must be an integer !!" unless $token == $NUMBER;
+    (($token, $value) = $self->get_token()) || return;
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+          "\"$value\" must be an integer") unless $token == $NUMBER;
     $value = "-$value";
   }
   my $val = $value;
-  ($token, $value) = $self->get_token();
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq '.') {
-    $self->get_token('.'); # range
-    ($token, $value) = $self->get_token();
-    die "Syntax error" unless $token;
+    $self->get_token('.') || return; # range
+    (($token, $value) = $self->get_token()) || return;
     if ($value eq '-') { # a negative value ?
-      ($token, $value) = $self->get_token();
-      die "Must be an integer !!" unless $token == $NUMBER;
+      (($token, $value) = $self->get_token()) || return;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"\"$value\" must be an integer") unless $token == $NUMBER;
       $value = "-$value";
     }
     $val = { 'range' => { 'min' => $val, 'max' => $value } };
@@ -958,22 +1043,26 @@ sub parse_subtype {
   my $self = shift;
 
   warn "DEBUG: Parsing a sub-type...\n" if $self->{'debug_lexer'};
-  my ($token, $value) = $self->get_token();
+  (my ($token, $value) = $self->get_token()) || return;
   if ($token && $value eq '(') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($token == $SIZE) {
       my $subtype = $self->parse_subtype();
-      $self->get_token(')');
+      return unless $subtype;
+      $self->get_token(')') || return;
       return { 'size' => $subtype };
     }
     else {
       $self->unget_token();
       my $list;
       while ($value ne ')') {
-	push @$list, $self->parse_one();
-	($token, $value) = $self->get_token();
-	die "Syntax error: must be ')' or '|'" unless $value eq ')' ||
-	    $value eq '|';
+	my $v = $self->parse_one();
+	return unless defined $v;
+	push @$list, $v;
+	(($token, $value) = $self->get_token()) || return;
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	  "\"$value\" must be ')' or '|'")
+	  unless $value eq ')' || $value eq '|';
       }
       # return scalar @$list == 1 ? { 'value' => $$list[0] } :
       #   { 'choice' => $list };
@@ -983,18 +1072,20 @@ sub parse_subtype {
   elsif ($token && $value eq '{') {
     my $list = {};
     while ($value ne '}') {
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       if ($token == $IDENTIFIER) {
 	my $res = $self->parse_subtype();
-	die "Error: must have a subtype" unless defined $res;
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	  "must have a subtype") unless defined $res;
 	$$list{$res} = $value;
       }
       else {
-	die "should be an identifier";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	  "should be an identifier");
       }
-      ($token, $value) = $self->get_token();
-      die "Error: must be a '}' or a ',' at or before line $self->{'lineno'}" .
-	" of $self->{'filename'} near '$value'"
+      (($token, $value) = $self->get_token()) || return;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	  "must be a '}' or a ',' instead of '$value'")
 	unless $value eq '}' || $value eq ',';
     }
     return { 'values' => $list };
@@ -1009,7 +1100,7 @@ sub parse_type {
   my $self = shift;
 
   warn "DEBUG: Parsing a type...\n" if  $self->{'debug_lexer'};
-  my ($token, $value) = $self->get_token();
+  (my ($token, $value) = $self->get_token()) || return;
   if ($token == $IMPLICIT) { # implicit types
     my $type = $self->parse_type();
     my $ref = ref $type;
@@ -1024,7 +1115,7 @@ sub parse_type {
   }
   elsif ($token == $INTEGER) { # integers
     my $type = "INTEGER";
-    my $subtype = $self->parse_subtype();
+    my $subtype = $self->parse_subtype(); # what if parse_subtype failed ???
     my $ref = ref $subtype;
     if (defined $ref && $ref eq 'HASH') {
       $$subtype{'type'} = $type;
@@ -1041,7 +1132,7 @@ sub parse_type {
     }
   }
   elsif ($token == $OCTET) { # octet strings
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($token == $STRING) {
       my $type = "OCTET STRING";
       my $subtype = $self->parse_subtype();
@@ -1049,11 +1140,12 @@ sub parse_type {
       return $subtype;
     }
     else {
-      die;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "parse error");
     }
   }
   elsif ($token == $OBJECT) { # object types
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($token == $IDENTIFIER) {
       my $type = "OBJECT IDENTIFIER";
       my $subtype = $self->parse_subtype();
@@ -1061,7 +1153,8 @@ sub parse_type {
       return $subtype;
     }
     else {
-      die;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "parse error");
     }
   }
   elsif ($token == $NULL) {
@@ -1074,10 +1167,10 @@ sub parse_type {
   }
   elsif ($token == $CHOICE) { # choices
     # CHOICE { va ta, vb tb, vc tc }
-    ($token, $value) = $self->get_token('{');
+    (($token, $value) = $self->get_token('{')) || return;
     my $list = {};
     while ($value ne '}') {
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       my $res = $self->parse_type();
       my $ref = ref $res;
       if (defined $ref && $ref eq 'HASH') {
@@ -1086,9 +1179,9 @@ sub parse_type {
       else {
 	$$list{$value} = { 'type' => $res };
       }
-      ($token, $value) = $self->get_token();
-      die "Error: must be a '}' or a ',' at or before line $self->{'lineno'}" .
-	" of $self->{'filename'} near '$value'"
+      (($token, $value) = $self->get_token()) || return;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		       "must be a '}' or a ',' instead of '$value'")
 	unless $value eq '}' || $value eq ',';
     }
     return { 'type'  => 'CHOICE',
@@ -1098,15 +1191,15 @@ sub parse_type {
     my $list = {}; # Should we keep the order of the items (and then
                    # use an array instead of a hash) ??
     my $subtype;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value eq '(') {
       $self->unget_token();
       $subtype = $self->parse_subtype();
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
     }
     if ($token == $OF) {
       # Small hack to obtain a name for this unique (?) item
-      my ($t1, $t2) = $self->get_token();
+      (my ($t1, $t2) = $self->get_token()) || return;
       $self->unget_token();
       $t2 = lc $t2;
 
@@ -1121,7 +1214,7 @@ sub parse_type {
     if ($value eq '{') {
       my $list = {};
       while ($value ne '}') {
-	($token, $value) = $self->get_token();
+	(($token, $value) = $self->get_token()) || return;
 	my $res;
 	if ($token == $CHOICE) {
 	  $self->unget_token();
@@ -1135,26 +1228,27 @@ sub parse_type {
 	  $$list{$value} = $res;
 	}
 	else {
-	  die "FATAL ERROR\n";
+	  return $self->assert(MIBERROR, $self->{'filename'},
+			  $self->{'lineno'}, "FATAL ERROR (please report)");
 	  $$list{$value} = { 'type' => $res };
 	}
-	($token, $value) = $self->get_token();
-	die "Error: must be a '}' or a ',' at or before line " .
-	  "$self->{'lineno'} of $self->{'filename'} near '$value'"
+	(($token, $value) = $self->get_token()) || return;
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		       "must be a '}' or a ',' instead of '$value'")
 	  unless $value eq '}' || $value eq ',';
       }
       return { 'type'  => 'SEQUENCE',
 	       'items' => $list };
     }
     else {
-      die;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "fatal error");
     }
-
   }
   elsif ($value eq '[') { # tagged types
     my $list = [];
     while ($value ne ']') { # read the tag
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       push @$list, $value unless $value eq ']';
     }
     my $type = $self->parse_type();
@@ -1171,7 +1265,8 @@ sub parse_type {
     return $subtype;
   }
   else {
-    die "Syntax error at '$value'";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		       "Syntax error at '$value'");
   }
 }
 
@@ -1179,52 +1274,56 @@ sub parse_textualconvention {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  (my ($token, $value) = $self->get_token()) || return;
   if ($value eq 'DISPLAY-HINT') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'display-hint'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|deprecated|obsolete)$/o) {
       $$data{'status'} = $value;
     }
     else {
-      die "Error at '$value': unknown status for TEXTUAL-CONVENTION";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unknown status ($value) for TEXTUAL-CONVENTION");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error in TC: 'STATUS' requiered";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error in TC: 'STATUS' requiered");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error in TC: 'DESCRIPTION' requiered";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error in TC: 'DESCRIPTION' requiered");
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'SYNTAX') {
     my $type;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value eq 'BITS') {
       $$type{'type'} = $value;
-      $self->get_token('{');
+      $self->get_token('{') || return;
       while ($value ne '}') {
-	($token, $value) = $self->get_token();
+	(($token, $value) = $self->get_token()) || return;
 	my $identifier = $value;
-	$self->get_token('(');
-	($token, $value) = $self->get_token('NUMBER');
+	$self->get_token('(') || return;
+	(($token, $value) = $self->get_token('NUMBER')) || return;
 	$$type{'values'}{$value} = $identifier;
-	$self->get_token(')');
-	($token, $value) = $self->get_token(); # should be ',' or ')'
+	$self->get_token(')') || return;
+	# should be ',' or ')'
+	(($token, $value) = $self->get_token()) || return;
       }
     }
     else {
@@ -1234,7 +1333,8 @@ sub parse_textualconvention {
     $$data{'syntax'} = $type;
   }
   else {
-    die "Syntax error in TC: 'SYNTAX' requiered";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error in TC: 'SYNTAX' requiered");
   }
   $data;
 }
@@ -1243,34 +1343,39 @@ sub parse_objectidentity {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|deprecated|obsolete)$/o) {
       $$data{'status'} = $value;
     }
     else {
-      die "Error at '$value': unknown status for OBJECT-IDENTITY";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unknown status ($value) for OBJECT-IDENTITY");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
-  die "Syntax error. '::=' needed" unless $token == $ASSIGNMENT;
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"Syntax error. '::=' needed") unless $token == $ASSIGNMENT;
   $$data{'oid'} = $self->parse_oid();
   $data;
 }
@@ -1280,52 +1385,59 @@ sub parse_moduleidentity {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq 'LAST-UPDATED') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'last-updated'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'LAST-UPDATED' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'LAST-UPDATED' needed");
   }
   if ($value eq 'ORGANIZATION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'organization'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'ORGANIZATION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'ORGANIZATION' needed");
   }
   if ($value eq 'CONTACT-INFO') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'contact-info'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'CONTACT-INFO' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'CONTACT-INFO' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   while ($value eq 'REVISION') {
     $$data{'revision'} = [] unless defined $$data{'revision'};
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     my $val = $value;
-    ($token, $value) = $self->get_token();
-    die "Syntax error: found '$value', need 'DESCRIPTION'"
+    (($token, $value) = $self->get_token()) || return;
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error: found '$value', need 'DESCRIPTION'")
       unless $value eq 'DESCRIPTION';
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     push @{$$data{'revision'}}, { 'revision'    => $val,
 				  'description' => $value };
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
-  die "Syntax error. '::=' needed" unless $token == $ASSIGNMENT;
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"Syntax error. '::=' needed") unless $token == $ASSIGNMENT;
   $$data{'oid'} = $self->parse_oid();
   $data;
 }
@@ -1335,45 +1447,51 @@ sub parse_notificationtype {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq 'OBJECTS') {
     my $list = [];
-    ($token, $value) = $self->get_token('{');
+    (($token, $value) = $self->get_token('{')) || return;
     while ($value ne '}') {
-      ($token, $value) = $self->get_token('IDENTIFIER');
+      (($token, $value) = $self->get_token('IDENTIFIER')) || return;
       push @$list, $value;
-      ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+      # shoud be a ',' or a '}'
+      (($token, $value) = $self->get_token()) || return;
     }
     $$data{'objects'} = $list;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|deprecated|obsolete)$/o) {
       $$data{'status'} = $value;
     }
     else {
-      die "Error at '$value': unknown status for NOTIFICATION-TYPE";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unknown status ($value) for NOTIFICATION-TYPE");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
-  die "Syntax error. '::=' needed" unless $token == $ASSIGNMENT;
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"Syntax error. '::=' needed") unless $token == $ASSIGNMENT;
   $$data{'oid'} = $self->parse_oid();
   $data;
 }
@@ -1383,93 +1501,100 @@ sub parse_modulecompliance {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   my $name = 'this';
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|deprecated|obsolete)$/o) {
       $$data{'status'} = $value;
     }
     else {
-      die "Error at '$value': unknown status for MODULE-COMPLIANCE";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unknown status ($value) for MODULE-COMPLIANCE");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   while ($value eq 'MODULE') {
     $name = 'this';
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     while ($value ne 'MODULE' && $token != $ASSIGNMENT) {
       if ($value eq 'MANDATORY-GROUPS') {
 	my $list = [];
-	($token, $value) = $self->get_token('{');
+	(($token, $value) = $self->get_token('{')) || return;
 	while ($value ne '}') {
-	  ($token, $value) = $self->get_token('IDENTIFIER');
+	  (($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	  push @$list, $value;
-	  ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+	  # shoud be a ',' or a '}'
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	$$data{'module'}{$name}{'mandatory-groups'} = $list;
       }
       elsif ($value eq 'GROUP') {
-	($token, $value) = $self->get_token('IDENTIFIER');
+	(($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	my $val = $value;
-	($token, $value) = $self->get_token();
-	die "Syntax error: found '$value', need 'DESCRIPTION'"
+	(($token, $value) = $self->get_token()) || return;
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error: found '$value', need 'DESCRIPTION'")
 	  unless $value eq 'DESCRIPTION';
-	($token, $value) = $self->get_token('CSTRING');
+	(($token, $value) = $self->get_token('CSTRING')) || return;
 	$$data{'module'}{$name}{'group'}{$val} = $value;
       }
       elsif ($value eq 'OBJECT') {
-	($token, $value) = $self->get_token('IDENTIFIER');
+	(($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	my $val = $value;
-	($token, $value) = $self->get_token();
+	(($token, $value) = $self->get_token()) || return;
 	if ($value eq 'SYNTAX') {
 	  my $type = $self->parse_type();
 	  $$data{'module'}{$name}{'object'}{$val}{'syntax'} = $type;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'WRITE-SYNTAX') {
 	  my $type = $self->parse_type();
 	  $$data{'module'}{$name}{'object'}{$val}{'write-syntax'} = $type;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'MIN-ACCESS') {
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	  if ($value =~ m/^(read-(only|write|create)|not-accessible|
 			    accessible-for-notify)$/ox) {
 	    $$data{'module'}{$name}{'object'}{$val}{'min-access'} = $value;
 	  }
 	  else {
-	    die "Unknown MIN-ACCESS type ($value)";
+	    return $self->assert(MIBERROR, $self->{'filename'},
+		$self->{'lineno'}, "Unknown MIN-ACCESS type ($value)");
 	  }
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'DESCRIPTION') {
-	  ($token, $value) = $self->get_token('CSTRING');
+	  (($token, $value) = $self->get_token('CSTRING')) || return;
 	  $$data{'module'}{$name}{'object'}{$val}{'description'} = $value;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	$self->unget_token();
       }
       elsif ($token == $TYPEMODREFERENCE) {
 	# Modulename
 	$name = $value;
-	($token, $value) = $self->get_token();
+	(($token, $value) = $self->get_token()) || return;
 	if ($token == $IDENTIFIER) { # ModuleIdentifier
 	  $$data{'module'}{$name}{'identifier'} = $value;
 	}
@@ -1478,12 +1603,14 @@ sub parse_modulecompliance {
 	}
       }
       else {
-	die "Syntax error at '$value'";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error at '$value'");
       }
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
     }
   }
-  die "Syntax error. '::=' needed" unless $token == $ASSIGNMENT;
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		 "Syntax error. '::=' needed") unless $token == $ASSIGNMENT;
   $$data{'oid'} = $self->parse_oid();
   $data;
 }
@@ -1493,48 +1620,55 @@ sub parse_objectgroup {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value)= $self->get_token()) || return;
   if ($value eq 'OBJECTS') {
     my $list = [];
-    ($token, $value) = $self->get_token('{');
+    (($token, $value) = $self->get_token('{'));
     while ($value ne '}') {
-      ($token, $value) = $self->get_token('IDENTIFIER');
+      (($token, $value) = $self->get_token('IDENTIFIER')) || return;
       push @$list, $value;
-      ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+      # shoud be a ',' or a '}'
+      (($token, $value) = $self->get_token()) || return;
     }
     $$data{'objects'} = $list;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'OBJECTS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'OBJECTS' needed");
   }
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|deprecated|obsolete)$/o) {
       $$data{'status'} = $value;
     }
     else {
-      die "Error at '$value': unknown status for OBJECT-GROUP";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unknown status ($value) for OBJECT-GROUP");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
-  die "Syntax error. '::=' needed" unless $token == $ASSIGNMENT;
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"Syntax error. '::=' needed") unless $token == $ASSIGNMENT;
   $$data{'oid'} = $self->parse_oid();
   $data;
 }
@@ -1544,48 +1678,55 @@ sub parse_notificationgroup {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq 'NOTIFICATIONS') {
     my $list = [];
-    ($token, $value) = $self->get_token('{');
+    (($token, $value) = $self->get_token('{')) || return;
     while ($value ne '}') {
-      ($token, $value) = $self->get_token('IDENTIFIER');
+      (($token, $value) = $self->get_token('IDENTIFIER')) || return;
       push @$list, $value;
-      ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+      # shoud be a ',' or a '}'
+      (($token, $value) = $self->get_token()) || return;
     }
     $$data{'NOTIFICATIONS'} = $list;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'NOTIFICATIONS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'NOTIFICATIONS' needed");
   }
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|deprecated|obsolete)$/o) {
       $$data{'status'} = $value;
     }
     else {
-      die "Error at '$value': unknown status for NOTIFICATION-GROUP";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "unknown status ($value) for NOTIFICATION-GROUP");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
-  die "Syntax error. '::=' needed" unless $token == $ASSIGNMENT;
+  return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		 "Syntax error. '::=' needed") unless $token == $ASSIGNMENT;
   $$data{'oid'} = $self->parse_oid();
   $data;
 }
@@ -1595,118 +1736,128 @@ sub parse_agentcapabilities {
   my $data;
 
   my $name = 'this';
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token());
+  return unless $token;
   # "PRODUCT-RELEASE" Text
   if ($value eq 'PRODUCT-RELEASE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'product-release'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'PRODUCT-RELEASE' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'PRODUCT-RELEASE' needed");
   }
   # "STATUS" Status
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($value =~ m/^(current|obsolete)$/o) {
       $$data{'status'} = $value;
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
     }
     else {
-      die "Error at '$value': unknown status for AGENT-CAPABILITIES";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		"unknown status ($value) for AGENT-CAPABILITIES");
     }
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   # "DESCRIPTION" Text
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'DESCRIPTION' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'DESCRIPTION' needed");
   }
   # ReferPart
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   # ModulePart
   while (defined $token && $token != $ASSIGNMENT) {
     while (defined $token && $value ne 'SUPPORTS' && $token != $ASSIGNMENT) {
       if ($value eq 'INCLUDES') {
 	my $list = [];
-	($token, $value) = $self->get_token('{');
+	(($token, $value) = $self->get_token('{')) || return;
 	while ($value ne '}') {
-	  ($token, $value) = $self->get_token('IDENTIFIER');
+	  (($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	  push @$list, $value;
-	  ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+	  # shoud be a ',' or a '}'
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	$$data{'supports'}{$name}{'includes'} = $list;
-	($token, $value) = $self->get_token()
+	(($token, $value) = $self->get_token()) || return
       }
       while ($value eq 'VARIATION') {
-	($token, $value) = $self->get_token('IDENTIFIER');
+	(($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	my $val = $value; # ObjectName or NotificationName
-	($token, $value) = $self->get_token();
+	(($token, $value) = $self->get_token()) || return;
 	if ($value eq 'SYNTAX') {
 	  my $type = $self->parse_type();
 	  $$data{'supports'}{$name}{'variation'}{$val}{'syntax'} = $type;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'WRITE-SYNTAX') {
 	  my $type = $self->parse_type();
 	  $$data{'supports'}{$name}{'variation'}{$val}{'write-syntax'} = $type;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'ACCESS') {
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	  if ($value =~ m/^(not-implemented|accessible-for-notify|
 			    read-(only|write|create)|write-only)$/ox) {
 	    $$data{'supports'}{$name}{'variation'}{$val}{'access'} = $value;
 	  }
 	  else {
-	    die "Unknown ACCESS type ($value)";
+	    return $self->assert(MIBERROR, $self->{'filename'},
+		$self->{'lineno'}, "Unknown ACCESS type ($value)");
 	  }
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'CREATION-REQUIRES') {
 	  my $list = [];
-	  ($token, $value) = $self->get_token('{');
+	  (($token, $value) = $self->get_token('{')) || return;
 	  while ($value ne '}') {
-	    ($token, $value) = $self->get_token('IDENTIFIER');
+	    (($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	    push @$list, $value;
-	    ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+	    # shoud be a ',' or a '}'
+	    (($token, $value) = $self->get_token()) || return;
 	  }
 	  $$data{'supports'}{$name}{'variation'}{$val}{'creation-requires'} =
 	    $list;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'DEFVAL') {
-	  ($token, $value) = $self->get_token('{');
-	  ($token, $value) = $self->get_token('IDENTIFIER');
+	  (($token, $value) = $self->get_token('{')) || return;
+	  (($token, $value) = $self->get_token('IDENTIFIER')) || return;
 	  $$data{'supports'}{$name}{'variation'}{$val}{'defval'} = $value;
-	  ($token, $value) = $self->get_token('}');
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token('}')) || return;
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	if ($value eq 'DESCRIPTION') {
-	  ($token, $value) = $self->get_token('CSTRING');
+	  (($token, $value) = $self->get_token('CSTRING')) || return;
 	  $$data{'supports'}{$name}{'variation'}{$val}{'description'} = $value;
-	  ($token, $value) = $self->get_token();
+	  (($token, $value) = $self->get_token()) || return;
 	}
 	else {
-	  die "Syntax error. 'DESCRIPTION' needed";
+	  return $self->assert(MIBERROR, $self->{'filename'},
+		     $self->{'lineno'}, "Syntax error. 'DESCRIPTION' needed");
 	}
       }
     }
     if ($value eq 'SUPPORTS') {
       # Modulename
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       $name = $value;
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       if ($token == $IDENTIFIER) { # ModuleIdentifier
 	$$data{'module'}{$name}{'identifier'} = $value;
       }
@@ -1714,7 +1865,8 @@ sub parse_agentcapabilities {
 	$self->unget_token();
       }
     }
-    ($token, $value) = $self->get_token() unless $token == $ASSIGNMENT;
+    (($token, $value) = $self->get_token()) || return
+      unless $token == $ASSIGNMENT;
   }
   $$data{'oid'} = $self->parse_oid();
   $data;
@@ -1725,43 +1877,46 @@ sub parse_traptype {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq 'ENTERPRISE') {
-    ($token, $value) = $self->get_token('IDENTIFIER');
+    (($token, $value) = $self->get_token('IDENTIFIER')) || return;
     $$data{'enterprise'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'ENTERPRISE' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'ENTERPRISE' needed");
   }
   if ($value eq 'VARIABLES') {
     my $list = [];
-    ($token, $value) = $self->get_token('{');
+    (($token, $value) = $self->get_token('{')) || return;
     while ($value ne '}') {
-      ($token, $value) = $self->get_token('IDENTIFIER');
+      (($token, $value) = $self->get_token('IDENTIFIER')) || return;
       push @$list, $value;
-      ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+      # shoud be a ',' or a '}'
+      (($token, $value) = $self->get_token()) || return;
     }
     $$data{'variables'} = $list;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($token == $ASSIGNMENT) {
-    my $value = $self->get_token('NUMBER');
+    (my $value = $self->get_token('NUMBER')) || return;
     $$data{'value'} = $value;
   }
   else {
-    die "Syntax error. Should be '::=' at or before line $self->{'lineno'}" .
-	" of $self->{'filename'} near '$value'";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Should be '::='instead of '$value'");
   }
   $data;
 }
@@ -1771,22 +1926,24 @@ sub parse_objecttype {
   my $self = shift;
   my $data;
 
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   if ($value eq 'SYNTAX') {
     my $syntax = {};
     my $type;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($self->{'accept_smiv2'} && $value eq 'BITS') {
       $$type{'type'} = $value;
-      $self->get_token('{');
+      $self->get_token('{') || return;
       while ($value ne '}') {
-	($token, $value) = $self->get_token();
+	(($token, $value) = $self->get_token()) || return;
 	my $identifier = $value;
-	$self->get_token('(');
-	($token, $value) = $self->get_token('NUMBER');
+	$self->get_token('(') || return;
+	(($token, $value) = $self->get_token('NUMBER')) || return;
 	$$type{'values'}{$value} = $identifier;
-	$self->get_token(')');
-	($token, $value) = $self->get_token(); # should be ',' or ')'
+	$self->get_token(')') || return;
+	# should be ',' or ')'
+	(($token, $value) = $self->get_token()) || return;
       }
     }
     else {
@@ -1809,55 +1966,63 @@ sub parse_objecttype {
       }
     }
     $$data{'syntax'} = $syntax;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'SYNTAX' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "'SYNTAX' needed");
   }
   if ($self->{'accept_smiv2'} && $value eq 'UNITS') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'units'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'ACCESS' || $value eq 'MAX-ACCESS') {
     if ($value eq 'MAX-ACCESS') {
-      die "Syntax error at $value" unless $self->{'accept_smiv2'};
-      ($token, $value) = $self->get_token();
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		 "Syntax error at $value") unless $self->{'accept_smiv2'};
+      (($token, $value) = $self->get_token()) || return;
       if ($value =~ m/^(read-(only|write)|not-accessible|
 			accessible-for-notify|read-create)$/ox) {
 	# Valid SMIv2 acces type (rfc 1902, draft-ops-smiv2-smi-01)
 	$$data{'access'} = $value;
       }
       else {
-	die "Unknown acces type ($value)";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Unknown acces type ($value)");
       }
     }
     else { # 'ACCESS'
-      die "Syntax error at $value" unless $self->{'accept_smiv1'};
-      ($token, $value) = $self->get_token();
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+		 "Syntax error at $value") unless $self->{'accept_smiv1'};
+      (($token, $value) = $self->get_token()) || return;
       if ($value =~ m/^(read-(only|write)|write-only|not-accessible)$/o) {
 	# Valid SMIv1 acces type (rfc 1155, rfc 1212)
 	$$data{'access'} = $value;
       }
       else {
-	die "Unknown acces type ($value)";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			     "Unknown acces type ($value)");
       }
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
     if ($self->{'accept_smiv1'} && !$self->{'accept_smiv2'}) {
-      die "Syntax error. 'ACCESS' needed";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'ACCESS' needed");
     }
     elsif (!$self->{'accept_smiv1'} && $self->{'accept_smiv2'}) {
-      die "Syntax error. 'MAX-ACCESS' needed";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			   "Syntax error. 'MAX-ACCESS' needed");
     }
     else {
-      die "Syntax error. 'ACCESS' or 'MAX-ACCESS' needed";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'ACCESS' or 'MAX-ACCESS' needed");
     }
   }
   if ($value eq 'STATUS') {
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
     if ($self->{'accept_smiv1'} &&
 	$value =~ m/^(mandatory|optional|obsolete|deprecated)$/o) {
       # Valid SMIv1 status (rfc 1155)
@@ -1870,67 +2035,75 @@ sub parse_objecttype {
       $$data{'status'} = $value;
     }
     else {
-      die "Unknown status ($value)";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Unknown status ($value)");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error. 'STATUS' needed");
   }
   if ($value eq 'DESCRIPTION') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'description'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   else {
-    die "Syntax error. 'STATUS' needed" unless $self->{'accept_smiv1'};
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"Syntax error. 'STATUS' needed") unless $self->{'accept_smiv1'};
   }
   if ($value eq 'REFERENCE') {
-    ($token, $value) = $self->get_token('CSTRING');
+    (($token, $value) = $self->get_token('CSTRING')) || return;
     $$data{'reference'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'INDEX') {
     my $list = [];
-    ($token, $value) = $self->get_token('{');
+    (($token, $value) = $self->get_token('{')) || return;
     while ($value ne '}') {
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       my $implied = 0;
-      $implied++, ($token, $value) = $self->get_token('IDENTIFIER')
-	if $value eq 'IMPLIED';
+      if ($value eq 'IMPLIED') {
+	$implied++;
+	(($token, $value) = $self->get_token('IDENTIFIER'));
+      }
       push @$list, { 'value' => $value, 'implied' => $implied };
-      ($token, $value) = $self->get_token(); # shoud be a ',' or a '}'
+      # shoud be a ',' or a '}'
+      (($token, $value) = $self->get_token()) || return;
     }
     $$data{'index'} = $list;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'AUGMENTS' && $self->{'accept_smiv2'}) {
-    die "Can't define both 'INDEX' and 'AUGMENTS'" if defined $$data{'index'};
-    $self->get_token('{');
-    ($token, $value) = $self->get_token('IDENTIFIER');
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+	"Can't define both 'INDEX' and 'AUGMENTS'") if defined $$data{'index'};
+    $self->get_token('{') || return;
+    (($token, $value) = $self->get_token('IDENTIFIER')) || return;
     $$data{'augments'} = $value;
-    $self->get_token('}');
-    ($token, $value) = $self->get_token();
+    $self->get_token('}') || return;
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'DEFVAL') {
     # SMIv1: rfc 1212
     # SMIv2: rfc 1902
-    $self->get_token('{');
-    ($token, $value) = $self->get_token();
+    $self->get_token('{') || return;
+    (($token, $value) = $self->get_token()) || return;
     if ($value eq '-') {
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       $value = "-" . $value;
     }
-    $self->get_token('}');
+    $self->get_token('}') || return;
     $$data{'defval'} = $value;
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   if ($token == $ASSIGNMENT) {
     my $oid = $self->parse_oid();
     $$data{'oid'} = $oid;
   }
   else {
-    die "should be ::=";
+    return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "should be ::=");
   }
   $data;
 }
@@ -1945,8 +2118,9 @@ sub parse_oid {
   #                                ^^^^^^^^^^^^^^^^^^^^^^^
   #
   my ($list, $old, $old2);
-  $self->get_token('{');
-  my ($token, $value) = $self->get_token();
+  $self->get_token('{') || return;
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   while (defined $token && $value ne '}') {
     if ($token == $IDENTIFIER ||
 	$token == $NUMBER) {
@@ -1956,8 +2130,8 @@ sub parse_oid {
     }
     elsif ($value eq '(') {
       if ($old2 && $old) {
-	($token, $value) = $self->get_token('NUMBER');
-        $self->get_token(')');
+	(($token, $value) = $self->get_token('NUMBER')) || return;
+        $self->get_token(')') || return;
 	# Add this to the tree
 	$self->{'nodes'}{$old}{'oid'} = [ $old2, $value ];
       }
@@ -1965,13 +2139,15 @@ sub parse_oid {
 	# These syntaxes are incorrect:
 	#  { iso(1) ...}
         #  { (1) ... }
-	die "Syntax error";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error");
       }
     }
     else {
-      die "Syntax error";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "Syntax error");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   $list;
 }
@@ -1986,24 +2162,25 @@ sub parse_imports {
   #
   my ($list, $data);
   my $elem = 0;
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   while (defined $token && $value ne ';') {
     if ($token == $IDENTIFIER ||
 	$token == $TYPEMODREFERENCE) {
-      die "two values must be separated by a comma at line ",
-	$self->{'lineno'}, " of $self->{'filename'}\n" if $elem;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "two values must be separated by a comma") if $elem;
       push @$list, $value;
       $elem = 1;
     }
     elsif ($value eq ',') {
-      die "value expected. ',' found at line ", $self->{'lineno'},
-	" of $self->{'filename'}\n" unless $elem;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "value expected. ',' found") unless $elem;
       $elem = 0;
     }
     elsif ($token == $FROM) {
       $elem = 0;
       my $oldvalue = $value;
-      ($token, $value) = $self->get_token();
+      (($token, $value) = $self->get_token()) || return;
       if ($token == $IDENTIFIER ||
 	$token == $TYPEMODREFERENCE) {
 	my @l;
@@ -2013,16 +2190,16 @@ sub parse_imports {
 	undef $list;
       }
       else {
-	die "identifier expected after '$oldvalue' at line ",
-	  $self->{'lineno'}, " of $self->{'filename'}\n";
+	return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "identifier expected after '$oldvalue'");
       }
 
     }
     else {
-      die "syntax error while parsing IMPORTS clause at line ",
-	$self->{'lineno'}, " of $self->{'filename'}\n";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "syntax error while parsing IMPORTS clause");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   $data;
 }
@@ -2036,25 +2213,26 @@ sub parse_exports {
   #
   my $list;
   my $elem = 0;
-  my ($token, $value) = $self->get_token();
+  my ($token, $value);
+  (($token, $value) = $self->get_token()) || return;
   while (defined $token && $value ne ';') {
     if ($token == $IDENTIFIER ||
 	$token == $TYPEMODREFERENCE) {
-      die "two values must be separated by a comma at line ",
-	$self->{'lineno'}, " of $self->{'filename'}\n" if $elem;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "two values must be separated by a comma") if $elem;
       push @$list, $value;
       $elem = 1;
     }
     elsif ($value eq ',') {
-      die "value expected. ',' found at line ", $self->{'lineno'},
-	" of $self->{'filename'}\n" unless $elem;
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "value expected. ',' found") unless $elem;
       $elem = 0;
     }
     else {
-      die "syntax error while parsing EXPORTS clause at line ",
-	$self->{'lineno'}, " of $self->{'filename'}\n";
+      return $self->assert(MIBERROR, $self->{'filename'}, $self->{'lineno'},
+			 "syntax error while parsing EXPORTS clause");
     }
-    ($token, $value) = $self->get_token();
+    (($token, $value) = $self->get_token()) || return;
   }
   $list;
 }
@@ -2109,7 +2287,8 @@ sub import_modules {
 	for my $macro (@{$mib->{'macros'}}) {
 	  $found++, push (@{$self->{'macros'}}, $item) if $macro eq $item;
 	}
-	warn "Warning: can't find '$item' in $k\n" unless $found;
+	$self->assert(MIBWARN, $self->{'filename'}, $self->{'lineno'},
+			 "can't find '$item' in $k") unless $found;
       }
     }
     warn "DEBUG: $k imported.\n" if $self->{'debug_lexer'};
@@ -2513,8 +2692,6 @@ Example:
 =head1 BUGS
 
 Currently, it is more a TODO list than a bug list.
-
-- too many die()s
 
 - not enough documentation
 

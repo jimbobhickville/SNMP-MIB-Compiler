@@ -8,7 +8,7 @@ use Data::Compare;
 
 local $^W = 1;
 
-print "1..7\n";
+print "1..10\n";
 my $t = 1;
 
 my $mib = new SNMP::MIB::Compiler();
@@ -19,19 +19,22 @@ $mib->{'debug_lexer'} = 0;
 my $s = Stream->new(*DATA);
 $mib->{'stream'} = $s;
 
-&test('foo');
+&test('word1');
+&test('WORD2');
+&test('foo-bar');
+&test('FOO');
 &test('bar');
-&test('baz');
-&test('-');
 &test('bat');
-&test('foo');
-&test('foo');
+&test('foo-bar');
+&test('bar-foo');
+&test('PLUS-INFINITY');
+&test('MINUS-INFINITY');
 
 sub test {
   my $expect = shift;
 
   my ($res, $k) = $mib->yylex();
-  $k = '', print scalar $mib->assert  unless defined $k;
+  $k = '', print scalar $mib->assert unless defined $k;
   print $res && $k eq $expect ? "" : "not ", "ok ", $t++, "\n";
   print "Got '$k' but '$expect' was expected\n" unless $k eq $expect;
 }
@@ -40,21 +43,8 @@ sub test {
 
 __DATA__
 
--- an empty comment
---
-foo
-
--- the comment only contains a "-"
----
-bar
-
--- an empty enclosed comment
-----
-baz
-
--- a real "-" after an empty enclosed comment
------
-bat
-------
-foo
--- FOO -- foo
+word1 WORD2 foo-bar FOO--BAR
+bar -- BAZ -- bat
+foo-bar--bar-baz--bar-foo
+PLUS-INFINITY--
+MINUS-INFINITY

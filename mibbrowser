@@ -1,11 +1,17 @@
 #!/usr/bin/perl -w
 
 BEGIN { unshift @INC, "lib" }
+
 use strict;
 use SNMP::MIB::Compiler;
 use Data::Dumper;
 
-my $DATE = '1999/05/26';
+use Tk;
+use Tk::Tree;
+use Tk::Dialog;
+use Tk::FBox;
+
+my $DATE = '1999/09/06';
 
 my $outdir = 'out';
 my $file   = shift;
@@ -32,14 +38,12 @@ $mib->{'make_dump'}  = 1;
 $mib->{'use_dump'}   = 1;
 $mib->{'do_imports'} = 1;
 
-$mib->load($file) || $mib->compile($file) if $file;
+$mib->load($file) || $mib->compile($file) ||
+  print scalar $mib->assert if $file;
 
 exit if $file;
 
 ##########################################################################
-use Tk;
-use Tk::Tree;
-use Tk::Dialog;
 
 my $DEBUG = 0;
 my $title = "MIB Browser";
@@ -195,15 +199,15 @@ sub print_node {
   my @t = split /\n/, $desc;
   if (scalar @t > 1) {
     $desc = '';
-    $t[1] =~ m/^(\s+)/;
-    my $r = $1;
-    if (!$r && scalar @t > 1) {
-      $t[2] =~ m/^(\s+)/;
-      $r = $1;
-    }
+    my $r;
     for my $d (@t) {
-      $d =~ s/^$r//;
-      $desc .= "$d\n";
+      $r = $1, last if $d =~ m/^(\s+)/;
+    }
+    if ($r) {
+      for my $d (@t) {
+	$d =~ s/^$r//;
+	$desc .= "$d\n";
+      }
     }
   }
   $$entries{'OID'}{'e'}->delete(0, length $$entries{'OID'}{'e'}->get);
@@ -283,12 +287,22 @@ sub compile_list {
   $d->Label(-text => $descr)->pack(-side => 'left');
   my $top = $win->Frame->pack(-padx => 10, -pady => 10, -side => 'top',
 			       -expand => 1, -fill => 'both');
-  $top->Label(-text => "not implemented yet")->pack(-side => 'left');
+  # $top->Label(-text => "not implemented yet")->pack(-side => 'left');
   my $bot = $win->Frame->pack(-padx => 10, -pady => 10,-side => 'top',
 			       -expand => 0, -fill => 'x');
+  my $ent = $top->Entry(-width => 40)->pack(-side => 'left');
+  my $browse = $top->Button(-text => "Browse ...",
+			    -command => sub { fileDialog($top, $ent, 'open')}
+			   )->pack(-side => 'left');
+
   $bot->Button(-text => 'Ok',
 	       -command => sub {
-		 # ...
+		 if ($ent->get) {
+		   $mib->compile($ent->get);
+                   print scalar $mib->assert;
+		   $tree->delete('all');
+		   dyntree_adddir($tree, $mib, 'iso');
+		 }
 		 undef $$wins{'compile_list'}{$title};
 		 undef $$wins{'compile_list'}{' data '}{$title};
 		 $win->withdraw;
@@ -300,6 +314,22 @@ sub compile_list {
 		 $win->withdraw;
 	       })->pack(-side => 'left', -expand => 1, -fill => 'x');
 
+}
+
+sub fileDialog {
+  my $w   = shift;
+  my $ent = shift;
+
+  my $types =
+    [["MIB files",           [ '.', '.my', '.mib'] ],
+     ["All files",		'*']
+    ];
+  my $file = $w->getOpenFile(-filetypes => $types);
+  if (defined $file && $file ne '') {
+    $ent->delete(0, 'end');
+    $ent->insert(0, $file);
+    $ent->xview('end');
+  }
 }
 
 sub load_list {
@@ -395,6 +425,7 @@ sub load_list_refresh {
   @$mibs = sort { lc $a cmp lc $b } @$mibs;
   $$wins{'load_list'}{' data '}{$title} = $mibs;
 }
+
 sub choose_list {
   my $title = shift;
   my $descr = shift;
