@@ -43,7 +43,7 @@ use FileHandle;
 
 @ISA     = qw(Exporter);
 @EXPORT  = ();
-$VERSION = 0.02;
+$VERSION = 0.03;
 $DEBUG   = 1; # no longer used
 
 ######################################################################
@@ -275,8 +275,9 @@ sub yylex {
   }
   if ($c eq '\'') { # it can be a cstring or a hstring.
     $val = $c;
-    while (($c = $s->getc) ne '' && ($c =~ m/[0-9A-F]/o ||
-	  ($self->{'allow_lowcase_hstrings'} && $c =~ m/[a-f]/o))) {
+    # while (($c = $s->getc) ne '' && ($c =~ m/[0-9A-F]/o ||
+    #   ($self->{'allow_lowcase_hstrings'} && $c =~ m/[a-f]/o))) {
+    while (($c = $s->getc) ne '' && $c =~ m/[0-9A-Fa-f]/o) {
       $val .= $c;
     }
     return 0 unless $c;
@@ -296,6 +297,7 @@ sub yylex {
       if ($c eq 'H' && $val =~ m/^$ITEM_HEXADECIMALSTRING$/o) {
 	return ($HSTRING, $val);
       }
+      print "Invalid \"$val\". See 'allow_lowcase_{b|h}strings' switches.\n";
     }
     return 0; # Error
   }
@@ -957,8 +959,9 @@ sub parse_subtype {
 	die "Syntax error: must be ')' or '|'" unless $value eq ')' ||
 	    $value eq '|';
       }
-      return scalar @$list == 1 ? { 'value' => $$list[0] } :
-	{ 'choice' => $list };
+#     return scalar @$list == 1 ? { 'value' => $$list[0] } :
+# 	{ 'choice' => $list };
+      return scalar @$list == 1 ? $$list[0] : { 'choice' => $list };
     }
   }
   elsif ($value eq '{') {
@@ -1006,8 +1009,15 @@ sub parse_type {
   elsif ($token == $INTEGER) { # integers
     my $type = "INTEGER";
     my $subtype = $self->parse_subtype();
-    $$subtype{'type'} = $type;
-    return $subtype;
+    my $ref = ref $subtype;
+    if (defined $ref && $ref eq 'HASH') {
+      $$subtype{'type'} = $type;
+      return $subtype;
+    }
+    else {
+      return { 'values' => $subtype,
+	       'type'   => $type };
+    }
   }
   elsif ($token == $OCTET) { # octet strings
     ($token, $value) = $self->get_token();

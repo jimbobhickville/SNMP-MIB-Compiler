@@ -5,6 +5,11 @@ use strict;
 use FileHandle;
 use SNMP::MIB::Compiler;
 use Data::Compare;
+use Data::Dumper;
+$Data::Dumper::Purity = 1;
+$Data::Dumper::Indent = 1;
+$Data::Dumper::Terse  = 1;
+
 
 local $^W = 1;
 $| = 1;
@@ -31,6 +36,7 @@ unless ($value eq 'AGENT-CAPABILITIES') {
   exit 0;
 }
 $res = $mib->parse_agentcapabilities();
+print Dumper $res;
 my $good = {
   'supports' => {
     'SNMPv2-MIB' => {

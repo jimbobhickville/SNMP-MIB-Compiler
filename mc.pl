@@ -26,7 +26,7 @@ $mib->{'accept_smiv1'} = 1;
 $mib->{'accept_smiv2'} = 1;
 
 $mib->{'debug_recursive'} = 1;
-$mib->{'debug_lexer'}     = 0;
+$mib->{'debug_lexer'}     = 1;
 
 $mib->{'make_dump'}  = 1;
 $mib->{'use_dump'}   = 1;

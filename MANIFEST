@@ -8,6 +8,7 @@ lib/SNMP/MIB/Compiler.pm
 mc.pl
 mib-browser-1.gif
 mibs/APPLETALK-MIB
+mibs/BRIDGE-MIB
 mibs/CLNS-MIB
 mibs/IANAifType-MIB
 mibs/IF-MIB
