@@ -41,7 +41,7 @@ use FileHandle;
 
 @ISA     = qw(Exporter);
 @EXPORT  = ();
-$VERSION = 0.06;
+$VERSION = 0.07;
 $DEBUG   = 1;           # no longer used
 
 ######################################################################
@@ -52,18 +52,12 @@ my $ITEM_TYPEREFERENCE_PAT = '[A-Z](\-?[A-Za-z0-9])*';
 
 # Reserved character sequences (See Table 3/X.208)
 # and Additional keyword items (See §A.2.9)
-my @RESERVED_CHAR_SEQ = (
-  'BOOLEAN', 'INTEGER', 'BIT', 'STRING', 'OCTET',
-  'NULL', 'SEQUENCE', 'OF',     'SET',        'IMPLICIT', 'CHOICE',
-  'ANY',  'EXTERNAL', 'OBJECT', 'IDENTIFIER', 'OPTIONAL',
-  'DEFAULT', 'COMPONENTS', 'UNIVERSAL', 'APPLICATION',
-  'PRIVATE',     'TRUE',     'FALSE',      'BEGIN', 'END',
-  'DEFINITIONS', 'EXPLICIT', 'ENUMERATED', 'EXPORTS',
-  'IMPORTS', 'REAL', 'INCLUDES',      'MIN',     'MAX', 'SIZE',
-  'FROM',    'WITH', 'COMPONENT',     'PRESENT', 'ABSENT',
-  'DEFINED', 'BY',   'PLUS-INFINITY', 'MINUS-INFINITY',
-  'TAGS',
-  'MACRO', 'TYPE', 'NOTATION', 'VALUE', # Macro keywords
+my @RESERVED_CHAR_SEQ = qw(
+  BOOLEAN INTEGER BIT STRING OCTET NULL SEQUENCE OF SET IMPLICIT CHOICE ANY
+  EXTERNAL OBJECT IDENTIFIER OPTIONAL DEFAULT COMPONENTS UNIVERSAL APPLICATION
+  PRIVATE TRUE FALSE BEGIN END DEFINITIONS EXPLICIT ENUMERATED EXPORTS IMPORTS
+  REAL INCLUDES MIN MAX SIZE FROM WITH COMPONENT PRESENT ABSENT DEFINED BY
+  PLUS-INFINITY MINUS-INFINITY TAGS MACRO TYPE NOTATION VALUE
 );
 
 # my $ITEM_TYPEREFERENCE = '(?!' .
@@ -549,11 +543,12 @@ sub assert {
       'level'    => $level,
       'file'     => $file,
       'line'     => $line,
-      'msg'      => sprintf($msg, @_),
+      'msg'      => $msg,
       'cpackage' => $cpackage,
       'cfile'    => $cfile,
       'cline'    => $cline,
       };
+    confess("$msg at $file line $line") if ($level == 0);
     return $level;
   }
   else {
@@ -1176,7 +1171,7 @@ sub parse_subtype {
     (($token, $value) = $self->get_token()) || return;
     if ($token == $SIZE) {
       my $subtype = $self->parse_subtype();
-      return unless $subtype;
+      return unless (defined $subtype);
       $self->get_token(')') || return;
       return { 'size' => $subtype };
     }
@@ -1304,7 +1299,7 @@ sub parse_type {
     return { 'type' => "ANY" };
   }
   elsif ($token == $CHOICE) { # choices
-                            # CHOICE { va ta, vb tb, vc tc }
+                              # CHOICE { va ta, vb tb, vc tc }
     (($token, $value) = $self->get_token('{')) || return;
     my $list = {};
     while ($value ne '}') {
@@ -1764,7 +1759,6 @@ sub parse_modulecompliance {
         $self->unget_token();
       }
       elsif ($token == $TYPEMODREFERENCE) {
-
         # Modulename
         $name = $value;
         (($token, $value) = $self->get_token()) || return;
@@ -2311,7 +2305,6 @@ sub parse_objecttype {
     (($token, $value) = $self->get_token()) || return;
   }
   if ($value eq 'DEFVAL') {
-
     # SMIv1: rfc 1212
     # SMIv2: rfc 1902
     $self->get_token('{') || return;
@@ -2319,6 +2312,16 @@ sub parse_objecttype {
     if ($value eq '-') {
       (($token, $value) = $self->get_token()) || return;
       $value = "-" . $value;
+    }
+    elsif ($value eq '{') {
+      # empty curly braces are sometimes used, so allow them
+      # should they be transalted to empty string or something?
+      my $real_value = $value;
+      while ($value ne '}') {
+        (($token, $value) = $self->get_token()) || return;
+        $real_value .= $value;
+      }
+      $value = $real_value;
     }
     $self->get_token('}') || return;
     $$data{'defval'} = $value;
@@ -2364,8 +2367,12 @@ sub parse_oid {
         # Add this to the tree
         $self->{'nodes'}{$old}{'oid'} = [ $old2, $value ];
       }
+      elsif ($old) {
+        # work around faulty MIB files that have iso(1) instead of just iso
+        (($token, $value) = $self->get_token('NUMBER')) || return;
+        $self->get_token(')') || return;
+      }
       else {
-
         # These syntaxes are incorrect:
         #  { iso(1) ...}
         #  { (1) ... }
